@@ -8,7 +8,9 @@ After-tax cost uses each product's tax-character tag rather than assuming everyt
 * ``character_uncertain`` (MCA factor cost, factoring discount): if respected as a sale of receivables
   the discount is plausibly an ordinary deduction/loss rather than interest; if recharacterized as debt
   it is interest. Default: deductible, flagged, with the "treated as interest and limited" alternative.
-* ``rent`` (true leases): deductible rent. ``purchase_cost`` (forgone discounts): part of inventory cost.
+* ``rent`` (true leases): deductible rent. ``conditional_sale_likely`` (nominal buyout, or the business
+  keeps the equipment) and ``lease_character_unknown`` (no buyout, end of term not given): no after-tax
+  figure. ``purchase_cost`` (forgone discounts): part of inventory cost.
 
 The marginal rate is an input (federal + state). TaxKit (sibling project) can supply it: compute the
 owner's return with and without the deduction. These treatments need a tax professional's review.
@@ -26,15 +28,21 @@ def after_tax_cost(finance_charge: float, character: str, marginal_rate: float,
     if not (isinstance(marginal_rate, (int, float)) and math.isfinite(marginal_rate) and 0 <= marginal_rate < 1):
         raise ValueError("marginal_rate must be a decimal from 0 to below 1 (e.g. 0.30 for 30%)")
     deductible = {"interest": not interest_limited, "character_uncertain": True, "rent": True,
-                  "purchase_cost": True, "conditional_sale_likely": False}.get(character, False)
+                  "purchase_cost": True, "conditional_sale_likely": False,
+                  "lease_character_unknown": False}.get(character, False)
     cost = finance_charge * (1 - marginal_rate * deductible)
     out = {"after_tax_finance_charge": round(cost, 2), "assumed_deductible": deductible,
            "basis": "illustration: finance charge x (1 - marginal rate) when treated as deductible; real "
                     "timing and limits depend on the return"}
     if character == "conditional_sale_likely":
-        out["flag"] = ("A nominal buyout usually makes this a purchase (conditional sale), not rent: the business "
-                       "would depreciate the equipment and deduct an interest component instead. No after-tax "
-                       "figure is computed; ask a tax professional.")
+        out["flag"] = ("A nominal buyout, or keeping the equipment at the end, usually makes this a purchase "
+                       "(conditional sale), not rent: the business would depreciate the equipment and deduct an "
+                       "interest component instead. No after-tax figure is computed; ask a tax professional.")
+        out["after_tax_finance_charge"] = None
+    if character == "lease_character_unknown":
+        out["flag"] = ("Whether this lease is rent or a purchase depends on what happens at the end of the term, "
+                       "which was not given (no buyout, no end_of_term). No after-tax figure is computed; give "
+                       "end_of_term ('return' or 'own') and confirm the treatment with a tax professional.")
         out["after_tax_finance_charge"] = None
     if character == "rent":
         out["flag"] = "Assumes a true lease (rent is deductible). Confirm the lease's tax treatment."

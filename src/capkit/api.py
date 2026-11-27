@@ -22,6 +22,7 @@ from . import compare as C
 from . import disclosures as D
 from . import params as P
 from . import products as PR
+from .calendar import parse
 
 MAX_FLOWS = 25_000      # room for products.MAX_PERIODS payments plus advances
 MAX_OFFERS = 25
@@ -34,9 +35,12 @@ def true_cost(offer: dict, marginal_rate: float = 0.0, interest_limited: bool = 
     mca_split(advance, factor_rate, holdback, sales[list per period], frequency, funding_date, fees),
     revenue_based(advance, cap_multiple, revenue_share, revenue[list], frequency=month),
     term_loan(amount, annual_rate, months, fee), sba_7a(amount, prime, spread=None->SOP max, months=120,
-    fee_rate=None->FY table), line_of_credit(draw, annual_rate, weeks, draw_fee),
+    fee_rate=None->FY table, approval_date, prior_90_day_amount and prior_90_day_fee together for loans
+    approved within 90 days), line_of_credit(draw, annual_rate, weeks, draw_fee),
     factoring(face, advance_rate, fee_per_30_days, days_to_pay), trade_credit(invoice, discount,
-    discount_days, net_days), equipment_lease(equipment_cost, payment, months, buyout, advance_payments).
+    discount_days, net_days), equipment_lease(equipment_cost, payment, months, buyout, advance_payments,
+    fees, end_of_term=return|own|unspecified; ask whether the equipment goes back: with no buyout and no
+    end_of_term the tax character is unknown and no after-tax figure is given).
 
     Returns APR by both Appendix J methods, EAR, XIRR, finance charge, the naive simple-annualized quote,
     the dated schedule and, with ``marginal_rate``, an after-tax finance charge."""
@@ -63,6 +67,8 @@ def apr(flows: list, unit: Optional[str] = None, method: str = "both"):
         raise ValueError(f"flows must be a list of at most {MAX_FLOWS} [date-or-period, amount] pairs")
     if unit is not None and unit not in A.UNITS:
         raise ValueError(f"unit must be one of {sorted(A.UNITS)} or a multiple such as '6week' / '4month'")
+    if method not in ("actuarial", "us_rule", "both"):
+        raise ValueError("method must be 'actuarial', 'us_rule' or 'both'")
     out: Dict[str, Any] = {}
     if method in ("actuarial", "both"):
         out["apr_actuarial"] = A.apr_actuarial(flows, unit)
@@ -88,11 +94,14 @@ def disclosure_estimate(funding_provided: float, total_owed: float, split_rate: 
                         window: int = 6, window_method: str = "preceding", state: str = "CA",
                         frequency: str = "business_day", funding_date: str = "2027-01-04",
                         prepaid_fees: float = 0.0, minimum_payment: float = 0.0, paid_on_behalf: float = 0.0,
-                        split_schedule: Optional[list] = None, exclude_months: Optional[list] = None):
+                        split_schedule: Optional[list] = None, exclude_months: Optional[list] = None,
+                        funding_basis: str = "net"):
     """CA/NY estimated APR, term, payment and finance charge for a sales-based financing (MCA/RBF) under
     the historical method. Give ``avg_monthly_sales`` or ``monthly_sales`` (oldest first) + ``window``
     (and ``exclude_months``: indexes into monthly_sales the provider excluded). ``paid_on_behalf`` =
-    amounts paid to others for the recipient (part of the amount financed). ``split_schedule`` =
+    amounts paid to others for the recipient (part of the amount financed). ``funding_basis`` = "net"
+    (default: ``funding_provided`` is cash after prepaid fees are withheld) or "gross" (before; the fees are
+    then subtracted). ``split_schedule`` =
     [[from_month, rate], ...] when the split changes. Enter every contract feature you can: the result
     lists what was and was not modeled."""
     if avg_monthly_sales is None:
@@ -101,7 +110,7 @@ def disclosure_estimate(funding_provided: float, total_owed: float, split_rate: 
         avg_monthly_sales = D.historical_average(monthly_sales, window, state, window_method, exclude_months or ())
     est = D.estimate(funding_provided, total_owed, split_rate, avg_monthly_sales, frequency, funding_date,
                      prepaid_fees, minimum_payment, state=state, paid_on_behalf=paid_on_behalf,
-                     split_schedule=split_schedule)
+                     split_schedule=split_schedule, funding_basis=funding_basis)
     est.pop("_schedule", None)
     return est
 
@@ -112,7 +121,7 @@ def check_disclosure(disclosed_apr: float, funding_provided: float, total_owed: 
                      frequency: str = "business_day", funding_date: str = "2027-01-04",
                      prepaid_fees: float = 0.0, minimum_payment: float = 0.0, irregular: Optional[bool] = None,
                      paid_on_behalf: float = 0.0, split_schedule: Optional[list] = None,
-                     exclude_months: Optional[list] = None):
+                     exclude_months: Optional[list] = None, funding_basis: str = "net"):
     """Recompute a CA/NY disclosure and say whether the disclosed estimated APR (a decimal) is reproduced
     by the actuarial method, the U.S. Rule method, both, or neither, within the CA 10 CCR 955 / NY 23
     NYCRR 600.4 tolerances. ``irregular`` is detected from the schedule unless given. A non-match is
@@ -123,16 +132,20 @@ def check_disclosure(disclosed_apr: float, funding_provided: float, total_owed: 
         avg_monthly_sales = D.historical_average(monthly_sales, window, state, window_method, exclude_months or ())
     est = D.estimate(funding_provided, total_owed, split_rate, avg_monthly_sales, frequency, funding_date,
                      prepaid_fees, minimum_payment, state=state, paid_on_behalf=paid_on_behalf,
-                     split_schedule=split_schedule)
+                     split_schedule=split_schedule, funding_basis=funding_basis)
     check = D.check_disclosed_apr(disclosed_apr, est, state, irregular)
     out = {"recomputed": est, "check": check}
+    other = est.get("if_funding_provided_is_before_fees")
+    if other:      # the same disclosed figure judged under the other reading of funding_provided
+        out["check_if_funding_provided_is_before_fees"] = D.check_disclosed_apr(
+            disclosed_apr, {**est, **other}, state, irregular)["verdict"]
     if frequency == "business_day":
         # Debit calendars differ (Federal Reserve holidays or not); either can be a reasonable estimate
         # (CA 10 CCR 901(a)(16) and 12 CFR 1026.17(c)(3) disregard minor irregularities).
         avg = est["assumed_average_monthly_sales"]
         alt = D.estimate(funding_provided, total_owed, split_rate, avg, frequency, funding_date, prepaid_fees,
                          minimum_payment, holidays=None, state=state, paid_on_behalf=paid_on_behalf,
-                         split_schedule=split_schedule)
+                         split_schedule=split_schedule, funding_basis=funding_basis)
         alt_check = D.check_disclosed_apr(disclosed_apr, alt, state, irregular)
         out["no_holiday_calendar"] = {"estimated_apr_actuarial": alt["estimated_apr_actuarial"],
                                       "estimated_apr_us_rule": alt["estimated_apr_us_rule"],
@@ -166,27 +179,43 @@ def evaluate_mix(scenario: dict, plan: dict, H: float = 0.0):
 
 def sba_fee(amount: float, approval_date: str = "REQUIRED", rate: Optional[float] = None, months: int = 120,
             zero_fee_eligible: bool = False, program: str = "standard", prior_90_day_amount: float = 0.0,
-            prior_90_day_fee: float = 0.0):
+            prior_90_day_fee: Optional[float] = None):
     """SBA 7(a) upfront guaranty fee on the guaranteed portion. The fee year follows ``approval_date``
     (FY2027 = approved Oct 1, 2026 - Sep 30, 2027). Short-term rate for ``months`` <= 12, size tiers
     otherwise, the 0% tier if ``zero_fee_eligible``; ``program`` = standard | express_veteran | ewcp | wcp;
-    loans approved within 90 days combine (``prior_90_day_amount`` / ``prior_90_day_fee``). Checked
-    against the statutory ceiling."""
+    loans approved within 90 days combine: give ``prior_90_day_amount`` and ``prior_90_day_fee`` together
+    (the fee already charged; 0 if none). Checked against the statutory ceiling: ``ceiling`` (what remains
+    for this loan), ``ceiling_combined_loans`` and ``ceiling_this_loan_alone``."""
     from .calendar import parse
     if approval_date == "REQUIRED":
         raise ValueError("approval_date is required: the SBA fee year follows the loan's approval date")
+    prior_fee = P.resolve_prior_90_day_fee(prior_90_day_amount, prior_90_day_fee)   # both or neither
     fy = P.fiscal_year(parse(approval_date))
-    return {"amount": amount, "fiscal_year": fy, "months": months, "program": program,
-            "guaranty_share": P.sba_guaranty_share(amount + prior_90_day_amount),
-            "fee": round(P.sba_upfront_fee(amount, fy, rate, months, zero_fee_eligible, program,
-                                           prior_90_day_amount, prior_90_day_fee), 2),
-            "ceiling": round(P.sba_fee_ceiling(amount), 2), "max_rate_at_prime": P.sba_max_rate(amount),
-            "zero_fee_rule": P.PARAMS["sba_fee_fy"]["value"].get(fy, {}).get("zero_fee_who")}
+    combined = P.sba_fee_ceiling(amount + prior_90_day_amount)
+    out = {"amount": amount, "fiscal_year": fy, "months": months, "program": program,
+           "guaranty_share": P.sba_guaranty_share(amount + prior_90_day_amount),
+           "fee": round(P.sba_upfront_fee(amount, fy, rate, months, zero_fee_eligible, program,
+                                          prior_90_day_amount, prior_fee), 2),
+           # the ceiling this loan's fee is checked against: the combined loans' ceiling less the fee already
+           # charged (15 U.S.C. 636(a)(18)(A); loans within 90 days count as one), never below zero
+           "ceiling": round(max(0.0, combined - (prior_fee if prior_90_day_amount else 0.0)), 2),
+           "ceiling_this_loan_alone": round(P.sba_fee_ceiling(amount), 2),
+           "max_rate_at_prime": P.sba_max_rate(amount), "prime_used": P.param("prime_rate"),
+           "prime_status": P.PARAMS["prime_rate"]["status"],
+           "zero_fee_rule": P.PARAMS["sba_fee_fy"]["value"].get(fy, {}).get("zero_fee_who")}
+    if prior_90_day_amount:
+        out["ceiling_combined_loans"] = round(combined, 2)
+        if prior_fee > combined + 1e-9:
+            out["warning"] = (f"the fee already charged ({prior_fee:,.2f}) exceeds the combined loans' statutory "
+                              f"ceiling ({combined:,.2f}); check the earlier loan's fee")
+    return out
 
 
 def params(key: Optional[str] = None):
     """Every parameter with its value, source, verified-on date and status (or one ``key``)."""
     if key:
+        if key not in P.PARAMS:
+            raise ValueError(f"unknown parameter {key!r} (known: {', '.join(sorted(P.PARAMS))})")
         return {key: P.PARAMS[key]}
     return P.PARAMS
 
@@ -253,13 +282,177 @@ def _finite(o, path="input"):
             _finite(v, f"{path}[{i}]")
 
 
+def _kind(v) -> str:
+    """The JSON name of a value's type, for error messages."""
+    if v is None:
+        return "null"
+    if isinstance(v, bool):
+        return "true/false"
+    if isinstance(v, (int, float)):
+        return "a number"
+    names: Dict[type, str] = {str: "a string", list: "a list", dict: "an object"}
+    return names.get(type(v), type(v).__name__)
+
+
+def _is_num(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _no_bools(v, where: str):
+    """true/false is never a number: reject it anywhere inside a list (JSON true would otherwise be 1)."""
+    if isinstance(v, bool):
+        raise ValueError(f"{where} is true/false; a number is needed")
+    if isinstance(v, (list, tuple)):
+        for i, x in enumerate(v):
+            _no_bools(x, f"{where}[{i}]")
+
+
+# element shapes of the list arguments (the annotation only says "list")
+_PAIRS = {"flows": (str, float), "split_schedule": (float, float)}
+_NUMBER_LISTS = {"monthly_sales", "exclude_months", "carries", "sales", "revenue"}
+
+
+def _is_date_key(key: str) -> bool:
+    return key.endswith("_date")
+
+
+def _check_date(where: str, v) -> None:
+    """A date argument must be a YYYY-MM-DD string; the error names the argument."""
+    try:
+        parse(v)
+    except ValueError as e:
+        raise ValueError(f"{where}: {e}") from None
+
+
+def _check_holidays(where: str, v) -> None:
+    if v in ("frb", None, False):
+        return
+    if not isinstance(v, (list, tuple)):
+        raise ValueError(f"{where} must be \"frb\", null, false or a list of YYYY-MM-DD dates, got {_kind(v)}")
+    for i, h in enumerate(v):
+        _check_date(f"{where}[{i}]", h)
+
+
+def _check_list(where: str, key: str, v: list) -> list:
+    """Check a list argument; returns it with any offers normalised (see ``_check_offer``)."""
+    if key == "flows" and len(v) > MAX_FLOWS:                 # size first: never walk a hostile list
+        raise ValueError(f"flows must be a list of at most {MAX_FLOWS} [date-or-period, amount] pairs")
+    if key == "offers" and not 1 <= len(v) <= MAX_OFFERS:
+        raise ValueError(f"offers must be a list of 1 to {MAX_OFFERS} offers")
+    _no_bools(v, where)
+    if key in _PAIRS:
+        first, _ = _PAIRS[key]
+        for i, x in enumerate(v):
+            if not (isinstance(x, (list, tuple)) and len(x) == 2):
+                raise ValueError(f"{where}[{i}] must be a [{'date-or-period' if first is str else 'month'}, "
+                                 f"number] pair, got {_kind(x)}")
+            if first is str and isinstance(x[0], str):
+                _check_date(f"{where}[{i}][0]", x[0])
+            elif not _is_num(x[0]):
+                raise ValueError(f"{where}[{i}][0] must be {'a date or a number' if first is str else 'a number'}, "
+                                 f"got {_kind(x[0])}")
+            if not _is_num(x[1]):
+                raise ValueError(f"{where}[{i}][1] must be a number, got {_kind(x[1])}")
+    elif key in _NUMBER_LISTS:
+        for i, x in enumerate(v):
+            if not _is_num(x):
+                raise ValueError(f"{where}[{i}] must be a number, got {_kind(x)}")
+    elif key == "offers":
+        return [_check_offer(f"{where}[{i}]", x) for i, x in enumerate(v)]
+    return v
+
+
+def _check_value(where: str, key: str, v, annotation):
+    """Check one argument against its annotation, so a wrong JSON type is a ValueError naming the argument
+    instead of a TypeError from deep inside the engine (or, for true/false, a silent 1 or 0). Returns the
+    value to pass on: a whole-number float for an ``int`` argument (``12.0``, common from JSON writers)
+    becomes ``12``, and offers are copied with their terms normalised the same way."""
+    ann = str(annotation)
+    optional = ann.startswith("Optional[") or ann.endswith(" | None")
+    base = ann[9:-1] if ann.startswith("Optional[") else (ann[:-7] if optional else ann)
+    if v is None:
+        if optional or annotation is inspect.Parameter.empty:
+            return v
+        raise ValueError(f"{where} must not be null")
+    if key == "holidays":
+        _check_holidays(where, v)
+        return v
+    if _is_date_key(key) and base in ("str", "_empty", str(inspect.Parameter.empty)):
+        _check_date(where, v)
+        return v
+    if base in ("float", "int"):
+        if not _is_num(v):
+            raise ValueError(f"{where} must be a number, got {_kind(v)}")
+        if base == "int":
+            if abs(v) > 2 ** 53:           # beyond exact float range (and float() of 10**400 overflows)
+                raise ValueError(f"{where} is too large, got {_kind(v)}")
+            if not float(v).is_integer():
+                raise ValueError(f"{where} must be a whole number, got {v}")
+            return int(v)
+    elif base == "bool":
+        if not isinstance(v, bool):
+            raise ValueError(f"{where} must be true or false, got {_kind(v)}")
+    elif base == "str":
+        if not isinstance(v, str):
+            raise ValueError(f"{where} must be a string, got {_kind(v)}")
+    elif base == "dict":
+        if not isinstance(v, dict):
+            raise ValueError(f"{where} must be an object, got {_kind(v)}")
+        if key == "offer":
+            return _check_offer(where, v)
+    elif base in ("list", "Sequence[int]", "Sequence[float]"):
+        if not isinstance(v, (list, tuple)):
+            raise ValueError(f"{where} must be a list, got {_kind(v)}")
+        return _check_list(where, key, list(v))
+    elif isinstance(v, bool):        # unannotated: still never let true/false stand in for a number
+        raise ValueError(f"{where} is true/false; check the value")
+    return v
+
+
+def _check_offer(where: str, spec) -> dict:
+    """Check an offer's type and terms against its builder's signature; returns a normalised copy (the
+    caller's dict is never modified)."""
+    if not isinstance(spec, dict):
+        raise ValueError(f"{where} must be an object, got {_kind(spec)}")
+    kind = spec.get("type")
+    if not isinstance(kind, str) or kind not in PR.BUILDERS:
+        got = repr(kind[:40]) if isinstance(kind, str) else _kind(kind)
+        raise ValueError(f"{where}.type must be one of {sorted(PR.BUILDERS)}, got {got}")
+    builder = PR.BUILDERS[kind]
+    params = inspect.signature(builder).parameters
+    out = dict(spec)
+    for k, v in spec.items():
+        if k in ("type", "name"):
+            continue
+        if k not in params:
+            raise ValueError(f"{where}: {kind} has no term {k!r} (accepted: {', '.join(params)})")
+        out[k] = _check_value(f"{where}.{k}", k, v, params[k].annotation)
+    return out
+
+
+_CONTRACT_ERRORS = (TypeError, AttributeError, KeyError, IndexError, ArithmeticError)
+
+
 def call(name: str, args: Dict[str, Any]):
+    """Run one command. Every problem with the arguments is a ``ValueError`` naming the argument; a
+    ``TypeError``/``KeyError``/... that still escapes the engine is reported as a ``ValueError`` too, with the
+    original type in the message (the contract the skills and ``test_cli_contract.py`` rely on)."""
     if not isinstance(args, dict):
         raise ValueError("arguments must be a JSON object")
     _finite(args)
     if name == "optimize_mix" and "scenario" not in args and "horizon_weeks" in args:
         args = {"scenario": args}
-    return COMMANDS[name](**args)
+    fn = COMMANDS[name]
+    sig = inspect.signature(fn)
+    try:                                   # unknown or missing argument names: a usage error, not a crash
+        bound = sig.bind(**args)
+    except TypeError as e:
+        raise ValueError(f"{name}: {e} (run 'describe {name}' for the accepted arguments)") from None
+    checked = {k: _check_value(k, k, v, sig.parameters[k].annotation) for k, v in bound.arguments.items()}
+    try:
+        return fn(**checked)
+    except _CONTRACT_ERRORS as e:
+        raise ValueError(f"{name}: these inputs cannot be evaluated ({type(e).__name__}: {e})") from e
 
 
 def main(argv=None, allowed=None):
@@ -273,6 +466,8 @@ def main(argv=None, allowed=None):
     try:
         if cmd not in ("list", "describe") and cmd not in names:
             raise KeyError(f"command {cmd!r} is not available in this skill (available: {', '.join(names)})")
+        if cmd == "describe" and len(argv) < 2:
+            raise ValueError("describe needs a command name (run 'list' for the commands)")
         if cmd == "describe" and argv[1] not in names:
             raise KeyError(f"command {argv[1]!r} is not available in this skill")
         if cmd == "list":

@@ -91,7 +91,9 @@ Each product carries a tax-character tag:
 - **Interest**: deductible, subject to §163(j) unless exempt.
 - **Character uncertain**: MCA and factoring costs, which depend on whether the deal is treated as a
   sale of receivables or as debt.
-- **Rent**: leases.
+- **Rent**: true leases, where the equipment goes back (`end_of_term: "return"`).
+- **Conditional sale likely**: a nominal ($1-out) buyout, or `end_of_term: "own"`. No after-tax figure.
+- **Lease character unknown**: no buyout and no `end_of_term`. No after-tax figure until it is given.
 - **Purchase cost**: forgone supplier discounts.
 
 The after-tax figure applies a user-supplied marginal rate. Uncertain items show both treatments.

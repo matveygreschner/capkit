@@ -21,6 +21,7 @@ from .calendar import add_months, business_days_after, parse
 
 # Tax character tags (compare.py): how the cost is likely treated for federal income tax.
 INTEREST, UNCERTAIN, RENT, PURCHASE = "interest", "character_uncertain", "rent", "purchase_cost"
+LEASE_UNKNOWN = "lease_character_unknown"   # lease with no buyout and no end_of_term
 
 
 @dataclass
@@ -197,7 +198,8 @@ def revenue_based(advance: float, cap_multiple: float, revenue_share: float, rev
 def level_payment(principal: float, periodic_rate: float, n: int) -> float:
     if periodic_rate == 0:
         return principal / n
-    return principal * periodic_rate / (1 - (1 + periodic_rate) ** -n)
+    # 1 - (1+r)^-n computed without cancellation: exact for tiny r, never 0 for r > 0
+    return principal * periodic_rate / -math.expm1(-n * math.log1p(periodic_rate))
 
 
 def term_loan(amount: float, annual_rate: float, months: int, fee: float = 0.0,
@@ -239,12 +241,15 @@ def term_loan(amount: float, annual_rate: float, months: int, fee: float = 0.0,
 def sba_7a(amount: float, prime: Optional[float] = None, spread: Optional[float] = None, months: int = 120,
            fee_rate: Optional[float] = None, fy: Optional[int] = None, funding_date="2027-01-04",
            borrower_pays_fee: bool = True, zero_fee_eligible: bool = False, approval_date=None,
-           program: str = "standard", prior_90_day_amount: float = 0.0, prior_90_day_fee: float = 0.0) -> Schedule:
+           program: str = "standard", prior_90_day_amount: float = 0.0, prior_90_day_fee: Optional[float] = None) -> Schedule:
     """SBA 7(a) variable-rate loan, rate held at today's Prime + spread for the schedule.
 
     ``spread`` defaults to the SOP 50 10 maximum for the loan size. The upfront guaranty fee is
     ``fee_rate`` x the *guaranteed portion* (85% at or below $150,000, 75% above), checked against the
-    statutory ceiling."""
+    statutory ceiling. Loans approved within 90 days combine: give ``prior_90_day_amount`` and
+    ``prior_90_day_fee`` (the fee already charged; 0 if none) together, as for ``sba_fee``."""
+    if borrower_pays_fee:      # a lender-paid fee never reaches the borrower's cash flows
+        prior_90_day_fee = P.resolve_prior_90_day_fee(prior_90_day_amount, prior_90_day_fee)
     prime_is_example = prime is None
     prime = P.param("prime_rate") if prime is None else prime
     rate = P.sba_max_rate(amount, prime) if spread is None else prime + spread
@@ -256,7 +261,7 @@ def sba_7a(amount: float, prime: Optional[float] = None, spread: Optional[float]
                             prior_90_day_fee) if borrower_pays_fee else 0.0
     s = term_loan(amount, rate, months, fee, funding_date)
     s.product = "sba_7a"
-    s.terms.update({"prime": prime, "spread": rate - prime, "guaranty_share": P.sba_guaranty_share(amount),
+    s.terms.update({"prime": prime, "spread": rate - prime, "guaranty_share": P.sba_guaranty_share(amount + prior_90_day_amount),
                     "upfront_fee": round(fee, 2), "fiscal_year": fy})
     s.notes.append("Variable rate held at today's Prime for the whole schedule; the APR changes if Prime moves.")
     s.terms["program"] = program
@@ -341,14 +346,21 @@ def early_pay_cost(discount: float, discount_days: int, net_days: int) -> dict:
     if discount >= 1:
         raise ValueError("discount must be below 100%")
     span = net_days - discount_days
-    return {"nominal": discount / (1 - discount) * 365 / span,
-            "effective": (1 + discount / (1 - discount)) ** (365 / span) - 1}
+    out: dict = {"nominal": discount / (1 - discount) * 365 / span}
+    try:
+        out["effective"] = (1 + discount / (1 - discount)) ** (365 / span) - 1
+    except OverflowError:                      # e.g. 99/0 net 1: the compounded rate is not representable
+        out["effective"] = None
+        out["warning"] = "effective annual rate is too large to represent; the nominal rate is exact"
+    return out
 
 
 def equipment_lease(equipment_cost: float, payment: float, months: int, buyout: float = 0.0,
-                    advance_payments: int = 0, fees: float = 0.0, start_date="2027-01-04") -> Schedule:
+                    advance_payments: int = 0, fees: float = 0.0, start_date="2027-01-04",
+                    end_of_term: str = "unspecified") -> Schedule:
     """Lease treated as financing of ``equipment_cost``: payments (``advance_payments`` of them due at
-    signing) plus the buyout (1 for a $1-out lease, the expected FMV/residual otherwise)."""
+    signing) plus the buyout (1 for a $1-out lease, the expected FMV/residual otherwise). ``end_of_term`` =
+    "return" (equipment goes back: rent), "own" (the business keeps it: conditional sale) or "unspecified"."""
     _num("equipment_cost", equipment_cost, 0, lo_open=True)
     _num("payment", payment, 0, lo_open=True)
     _num("months", months, 1, 600, integer=True)
@@ -365,11 +377,27 @@ def equipment_lease(equipment_cost: float, payment: float, months: int, buyout: 
     if buyout:
         last = flows[-1]
         flows[-1] = A.Flow(last.when, last.amount - buyout)
-    conditional = buyout <= 0.01 * equipment_cost        # $1-out / nominal buyout: likely a purchase
-    return Schedule("equipment_lease", flows, "month", equipment_cost, flows[0].amount,
-                    "conditional_sale_likely" if conditional else RENT,
+    if end_of_term not in ("return", "own", "unspecified"):
+        raise ValueError("end_of_term must be 'return', 'own' or 'unspecified'")
+    if end_of_term == "return" and buyout:
+        raise ValueError("end_of_term 'return' means the equipment goes back, so there is no buyout: drop buyout "
+                         "or use end_of_term 'own'")
+    # $1-out / nominal buyout, or ownership at the end: likely a purchase (conditional sale). A return
+    # lease with no buyout is a true lease. With no buyout and no end_of_term the character is unknown:
+    # it is not labelled a purchase, and no after-tax figure is computed (compare.after_tax_cost).
+    if end_of_term == "own" or 0 < buyout <= 0.01 * equipment_cost:
+        character = "conditional_sale_likely"
+    elif buyout == 0 and end_of_term == "unspecified":
+        character = LEASE_UNKNOWN
+    else:
+        character = RENT
+    return Schedule("equipment_lease", flows, "month", equipment_cost, flows[0].amount, character,
                     {"payment": payment, "months": months, "buyout": buyout, "advance_payments": advance_payments,
-                     "fees": fees}, ["Implicit rate; tax treatment depends on true-lease vs. conditional-sale."])
+                     "fees": fees, "end_of_term": end_of_term},
+                    ["Implicit rate; tax treatment depends on true-lease vs. conditional-sale."]
+                    + (["No buyout and no end_of_term given: whether this is rent or a purchase is unknown. Pass "
+                        "end_of_term='return' if the equipment goes back, 'own' if the business keeps it."]
+                       if character == LEASE_UNKNOWN else []))
 
 
 # ---------------------------------------------------------------- one set of measures for everything
@@ -387,7 +415,11 @@ def analyze(s: Schedule) -> dict:
         apr_a = apr_u = A.apr_single_payment(pair[0].amount, -pair[1].amount, pair[0].when, pair[1].when)
         unit = "term"
         days = (pair[1].when - pair[0].when).days
-        ear = (-pair[1].amount / pair[0].amount) ** (365 / days) - 1 if days else None
+        try:
+            ear = (-pair[1].amount / pair[0].amount) ** (365 / days) - 1 if days else None
+        except OverflowError:
+            ear = None
+            warnings.append("EAR is too large to represent (a very short, very expensive schedule).")
     else:
         apr_a = A.apr_actuarial(s.flows, unit)
         apr_u = A.apr_us_rule(s.flows, unit)

@@ -75,7 +75,7 @@ def _label_out(c, ws, row, label, formula, name, fmt=None, note=None):
 def sheet_start(wb, c):
     ws = wb.active
     ws.title = "Start"
-    ws["A1"] = "CapKit: what does this money really cost, and which money should I take?"
+    ws["A1"] = "CapKit: what does this financing really cost?"
     ws["A1"].font = TITLE
     lines = [
         "Yellow cells are inputs; green cells are results. Every formula is portable to Google Sheets.",
@@ -312,7 +312,8 @@ def sheet_disclosure(wb, c):
                "apr", PCT)
     _label_out(c, ws, 24, "Disclosed APR within tolerance of actuarial? (CA 955 / NY 600.4)",
                '=IF(OR(ABS(B11-B23)<=0.00125,AND(B11>0,(B23-B11)/B11<=0.025)),"yes","no")', "check",
-               "1/8 point, or a signed percentage difference of 2.5% or less; U.S. Rule figure: see the engine")
+               "1/8 point (the regular-transaction tolerance), or a signed percentage difference of 2.5% or less. "
+               "CapKit's engine treats business-day debits as irregular (1/4 point); U.S. Rule figure: see the engine")
     _label_out(c, ws, 26, "Schedule fits in the grid?",
                f'=IF(MAX(K4:K{4 + DAILY_ROWS})>=B17,"OK","TOO LONG: term exceeds {DAILY_ROWS} days, figures are NOT valid")',
                "fits")

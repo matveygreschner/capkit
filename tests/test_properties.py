@@ -6,7 +6,7 @@ import math
 from datetime import date, timedelta
 
 import pytest
-from hypothesis import assume, given, settings
+from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from capkit import api
@@ -30,14 +30,12 @@ def level_flows(amount, annual, n, start, fee=0.0):
 @SETTINGS
 @given(amounts, rates, terms, starts)
 def test_level_loan_without_fees_has_the_note_rate(amount, annual, n, start):
-    assume(start.day <= 28)          # end-of-month starts are covered by the anchor tests
     assert A.apr_actuarial(level_flows(amount, annual, n, start)) == pytest.approx(annual, abs=1e-9)
 
 
 @SETTINGS
 @given(amounts, rates, terms, starts, st.floats(0.001, 0.08))
 def test_a_fee_always_raises_the_apr(amount, annual, n, start, fee_share):
-    assume(start.day <= 28)
     base = A.apr_actuarial(level_flows(amount, annual, n, start))
     with_fee = A.apr_actuarial(level_flows(amount, annual, n, start, fee=amount * fee_share))
     assert with_fee > base
@@ -46,7 +44,6 @@ def test_a_fee_always_raises_the_apr(amount, annual, n, start, fee_share):
 @SETTINGS
 @given(amounts, rates, terms, starts, st.floats(0.01, 1000))
 def test_apr_is_invariant_to_currency_scale(amount, annual, n, start, k):
-    assume(start.day <= 28)
     f = level_flows(amount, annual, n, start, fee=amount * 0.02)
     g = [(d, a * k) for d, a in f]
     assert A.apr_actuarial(g) == pytest.approx(A.apr_actuarial(f), rel=1e-9, abs=1e-12)
@@ -55,7 +52,6 @@ def test_apr_is_invariant_to_currency_scale(amount, annual, n, start, k):
 @SETTINGS
 @given(amounts, rates, terms, starts)
 def test_present_value_at_the_solved_rate_is_zero(amount, annual, n, start):
-    assume(start.day <= 28)
     f = level_flows(amount, annual, n, start, fee=amount * 0.03)
     i = A.periodic_rate_actuarial(f, "month")
     pos = A._positions(A._flows(f), "month")
@@ -65,7 +61,6 @@ def test_present_value_at_the_solved_rate_is_zero(amount, annual, n, start):
 @SETTINGS
 @given(amounts, rates, terms, starts)
 def test_us_rule_equals_actuarial_when_payments_cover_interest(amount, annual, n, start):
-    assume(start.day <= 28)
     f = level_flows(amount, annual, n, start, fee=amount * 0.01)
     assert A.apr_us_rule(f) == pytest.approx(A.apr_actuarial(f), abs=1e-9)
 

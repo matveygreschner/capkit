@@ -55,6 +55,11 @@ class Book:
         return {o: sol[k].value[0, 0] for o, k in zip(outputs, outs)}
 
 
+# outputs measured in dollars; every other numeric output is a rate, a count or a date serial
+DOLLARS = {"finance_charge", "tl_payment", "tl_final", "sba_payment", "sba_final", "sba_fee", "sba_ceiling",
+           "fac_fee", "avg", "payment"}
+
+
 class Checker:
     def __init__(self, book):
         self.book, self.n, self.fail = book, 0, []
@@ -67,7 +72,9 @@ class Checker:
             if isinstance(exp, str):
                 ok = str(g) == exp
             else:
-                ok = isinstance(g, (int, float)) and abs(float(g) - float(exp)) <= (tol if abs(exp) >= 1 else 1e-6)
+                # rates (and counts/serial dates, which are whole numbers) to 1e-6; dollar amounts to a cent
+                lim = tol if k[1] in DOLLARS else 1e-6
+                ok = isinstance(g, (int, float)) and abs(float(g) - float(exp)) <= lim
             if not ok:
                 self.fail.append(f"{label}: {k[0]}.{k[1]} sheet={g!r} python={exp!r}")
 
@@ -160,12 +167,17 @@ def disclosure_cases(ch, rnd, n):
         est = D.estimate(fund, owed, split, avg, "business_day", d, fees, minp)
         if est["estimated_term_days"] > 1090:
             continue
+        # a disclosed APR near the estimate, so both "yes" and "no" verdicts are exercised; the sheet applies the
+        # regular (1/8 point) tolerance, so the engine's verdict is taken with irregular=False
+        disclosed = est["estimated_apr_actuarial"] * rnd.uniform(0.97, 1.01)
+        ok = D.check_disclosed_apr(disclosed, est, irregular=False)["methods"]["actuarial"]["consistent"]
         ins = {(S, "funding"): fund, (S, "owed"): owed, (S, "fees"): fees, (S, "split"): split, (S, "window"): win,
-               (S, "fund"): xl_date(d), (S, "minpay"): minp}
+               (S, "fund"): xl_date(d), (S, "minpay"): minp, (S, "disclosed"): disclosed}
         ins.update({(S, f"sales{k + 1}"): v for k, v in enumerate(sales)})
         ch.check(f"Disclosure {fund:.0f} w{win}", ins,
                  {(S, "avg"): avg, (S, "payment"): est["first_payment"], (S, "n"): est["number_of_payments"],
-                  (S, "term_days"): est["estimated_term_days"], (S, "apr"): est["estimated_apr_actuarial"]})
+                  (S, "term_days"): est["estimated_term_days"], (S, "apr"): est["estimated_apr_actuarial"],
+                  (S, "check"): "yes" if ok else "no"})
 
 
 def main():

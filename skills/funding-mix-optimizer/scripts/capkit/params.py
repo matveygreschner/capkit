@@ -1,12 +1,12 @@
 """Every rate, limit and convention CapKit uses, each with its source and the date it was last checked.
 
-This is the single source of truth, as in TaxKit: the engine, the workbook's ``Params_Sources`` sheet
+This is the single source of truth: the engine, the workbook's ``Params_Sources`` sheet
 and the skills' reference tables are all generated from it. ``status`` is ``"verified"`` when the value
 was checked against the primary source on ``verified_on``, and ``"verify"`` when it is the best
 available figure but must be re-checked against the named source before it is relied on.
 
-A test (tests/test_params.py) fails when any entry is older than ``MAX_AGE_DAYS``, so stale law cannot
-ship silently.
+A test (tests/test_products.py::test_params_have_sources_and_are_fresh) fails when any entry is older
+than ``MAX_AGE_DAYS``, so stale law cannot ship silently.
 """
 from __future__ import annotations
 
@@ -158,9 +158,22 @@ def _standard_fee(amount: float, fy: int, months, zero_fee_eligible: bool) -> fl
     return 0.035 * min(g, 1_000_000) + t["over_1m_guaranteed"] * max(0.0, g - 1_000_000)
 
 
+def resolve_prior_90_day_fee(prior_90_day_amount: float, prior_90_day_fee: float | None) -> float:
+    """The fee already charged on loans approved within the prior 90 days. The amount and the fee go together:
+    an amount without a fee would silently assume $0 was charged (overcharging this loan by the earlier fee),
+    and a fee without an amount would be ignored (the loans would not be combined). Both are errors."""
+    if prior_90_day_fee and not prior_90_day_amount:
+        raise ValueError("prior_90_day_fee was given without prior_90_day_amount: give the earlier loan(s)' "
+                         "amount so the loans are combined, or drop the fee")
+    if prior_90_day_amount and prior_90_day_fee is None:
+        raise ValueError("prior_90_day_amount needs prior_90_day_fee, the fee already charged on the earlier "
+                         "loan(s) (pass 0 if none was charged): the combined fee is reduced by it")
+    return float(prior_90_day_fee or 0.0)
+
+
 def sba_upfront_fee(amount: float, fy: int = 2026, rate: float | None = None, months: int | None = None,
                     zero_fee_eligible: bool = False, program: str = "standard",
-                    prior_90_day_amount: float = 0.0, prior_90_day_fee: float = 0.0) -> float:
+                    prior_90_day_amount: float = 0.0, prior_90_day_fee: float | None = None) -> float:
     """Upfront guaranty fee in dollars, on the *guaranteed portion* (never the face amount).
 
     * ``fy`` is the fiscal year of the loan's APPROVAL (FY2027 = approved Oct 1, 2026 - Sep 30, 2027).
@@ -168,15 +181,18 @@ def sba_upfront_fee(amount: float, fy: int = 2026, rate: float | None = None, mo
       (who qualifies is in the parameter table). ``program``: "standard", "express_veteran" (SBA Express
       to a veteran-owned business: $0), "ewcp" / "wcp" (rates by maturity).
     * Loans to the same applicant (and affiliates) approved within 90 days count as one loan: pass the
-      earlier loans' total as ``prior_90_day_amount`` and the fee already charged as ``prior_90_day_fee``;
-      this loan's fee is the combined fee less the fee already charged.
+      earlier loans' total as ``prior_90_day_amount`` and the fee already charged as ``prior_90_day_fee``
+      (both or neither; 0 if no fee was charged); this loan's fee is the combined fee less that fee.
     * ``rate`` overrides the table (a share of the guaranteed portion, 0 to 1).
     Raises if the fee would exceed the statutory ceiling or the fiscal year is not loaded."""
     import math as _m
     for name, v in (("amount", amount), ("prior_90_day_amount", prior_90_day_amount),
                     ("prior_90_day_fee", prior_90_day_fee)):
+        if v is None and name == "prior_90_day_fee":
+            continue
         if not (isinstance(v, (int, float)) and _m.isfinite(v)) or v < 0:
             raise ValueError(f"{name} must be a finite, non-negative number")
+    prior_90_day_fee = resolve_prior_90_day_fee(prior_90_day_amount, prior_90_day_fee)
     if program not in PROGRAMS:
         raise ValueError(f"program must be one of {PROGRAMS}")
     if months is not None and months <= 0:
@@ -205,7 +221,9 @@ def sba_upfront_fee(amount: float, fy: int = 2026, rate: float | None = None, mo
         g = sba_guaranty_share(total) * total
     else:
         fee = _standard_fee(amount, fy, months, zero_fee_eligible)
-    ceiling = sba_fee_ceiling(total) - (prior_90_day_fee if prior_90_day_amount else 0.0)
+    # what is left of the combined loans' ceiling after the fee already charged; never below zero (a prior
+    # fee above the combined ceiling leaves no room for this loan's fee, it does not make the ceiling negative)
+    ceiling = max(0.0, sba_fee_ceiling(total) - (prior_90_day_fee if prior_90_day_amount else 0.0))
     if fee > ceiling + 1e-9:
         raise ValueError(f"SBA upfront fee {fee:,.2f} exceeds the statutory ceiling "
                          f"{ceiling:,.2f} for a ${total:,.0f} loan (15 U.S.C. 636(a)(18)(A))")
