@@ -97,6 +97,7 @@ def daily_cases(ch, rnd, n):
         fac = rnd.uniform(1.1, 1.5)
         cases.append((d, adv, rnd.uniform(0, 2000), fac, adv * fac / rnd.randint(60, 400), rnd.choice("YN")))
     S = "Daily_MCA"
+    cases.append((date(2027, 1, 8), 100, 0, 1.35, 135, "N"))     # one debit: single-payment rule (Friday -> Monday)
     for d, adv, fee, fac, pay, hol in cases:
         s = mca_fixed(adv, fac, pay, "business_day", d, fees=fee, holidays="frb" if hol == "Y" else None)
         a = analyze(s)
@@ -112,13 +113,14 @@ def loan_cases(ch, rnd, n):
         (rnd.uniform(1e4, 5e5), rnd.uniform(0.05, 0.3), rnd.choice([12, 24, 36, 60]), rnd.uniform(0, 5000),
          rnd.choice([rnd.uniform(25e3, 50e3), rnd.uniform(5e4, 2.5e5), rnd.uniform(2.5e5, 3.5e5),
                      rnd.uniform(3.5e5, 3e6)]), rnd.uniform(0.04, 0.09)) for _ in range(n)]
-    for amt, rate, months, fee, sba_amt, prime in cases:
+    for k, (amt, rate, months, fee, sba_amt, prime) in enumerate(cases):
+        sba_months = 120 if k == 0 else rnd.choice([12, 60, 120, 300])
         tl = analyze(term_loan(amt, rate, months, fee))
-        sb = sba_7a(sba_amt, prime=prime)
+        sb = sba_7a(sba_amt, prime=prime, months=sba_months)
         sa = analyze(sb)
         ch.check(f"Loans {amt:.0f}/{sba_amt:.0f}",
                  {(S, "tl_amount"): amt, (S, "tl_rate"): rate, (S, "tl_months"): months, (S, "tl_fee"): fee,
-                  (S, "sba_amount"): sba_amt, (S, "prime"): prime},
+                  (S, "sba_amount"): sba_amt, (S, "prime"): prime, (S, "sba_months"): sba_months},
                  {(S, "tl_apr"): tl["apr_actuarial"], (S, "sba_fee"): sb.terms["upfront_fee"],
                   (S, "sba_ceiling"): P.sba_fee_ceiling(sba_amt), (S, "sba_apr"): sa["apr_actuarial"],
                   (S, "sba_rate"): sb.terms["annual_rate"], (S, "sba_fee_ok"): "OK"})
@@ -131,10 +133,11 @@ def earlypay_cases(ch, rnd, n):
         face, ar, f30, days = (10000, 0.8, 0.03, 45) if k == 0 else (
             rnd.uniform(1e3, 1e5), rnd.uniform(0.7, 0.95), rnd.uniform(0.005, 0.05), rnd.randint(10, 120))
         e = early_pay_cost(d, dd, nd)
-        fa = factoring(face, ar, f30, days)
+        sale = date(2026, 1, 1) + timedelta(rnd.randint(0, 700)) if k else date(2027, 1, 4)
+        fa = factoring(face, ar, f30, days, sale_date=sale)
         ch.check(f"EarlyPay {k}",
                  {(S, "disc"): d, (S, "dd"): dd, (S, "nd"): nd, (S, "face"): face, (S, "adv_rate"): ar,
-                  (S, "fee30"): f30, (S, "days"): days},
+                  (S, "fee30"): f30, (S, "days"): days, (S, "sale_date"): xl_date(sale)},
                  {(S, "ep_nominal"): e["nominal"], (S, "ep_effective"): e["effective"],
                   (S, "fac_fee"): fa.terms["fee"], (S, "fac_apr"): analyze(fa)["apr_actuarial"]})
 
@@ -157,7 +160,7 @@ def disclosure_cases(ch, rnd, n):
                (S, "fund"): xl_date(d), (S, "minpay"): minp}
         ins.update({(S, f"sales{k + 1}"): v for k, v in enumerate(sales)})
         ch.check(f"Disclosure {fund:.0f} w{win}", ins,
-                 {(S, "avg"): avg, (S, "payment"): est["estimated_payment"], (S, "n"): est["number_of_payments"],
+                 {(S, "avg"): avg, (S, "payment"): est["first_payment"], (S, "n"): est["number_of_payments"],
                   (S, "term_days"): est["estimated_term_days"], (S, "apr"): est["estimated_apr_actuarial"]})
 
 

@@ -85,7 +85,7 @@ def test_disclosure_from_archive(unpacked, tmp_path):
     code, out = _run(unpacked / "commercial-financing-disclosure", "check_disclosure",
                      json.dumps({"disclosed_apr": 0.60, "funding_provided": 50000, "total_owed": 67500,
                                  "split_rate": 0.10, "avg_monthly_sales": 60000}), cwd=tmp_path)
-    assert out["result"]["check"]["verdict"] == "inconsistent with both permitted methods"
+    assert out["result"]["check"]["verdict"] == "not reproduced by either permitted method with these inputs"
 
 
 def test_optimizer_skill_is_not_released():

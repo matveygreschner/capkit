@@ -79,10 +79,57 @@ def test_sba_fee_on_guaranteed_portion_and_ceiling():
 
 
 def test_every_stored_sba_fee_is_within_ceiling():
-    for fy, table in P.param("sba_fee_fy").items():
-        for bound, rate in table:
-            for amt in (bound * 0.5, bound):
-                assert rate * P.sba_guaranty_share(amt) * amt <= P.sba_fee_ceiling(amt) + 1e-6
+    for fy in P.param("sba_fee_fy"):
+        for amt in (25_000, 150_000, 150_000.01, 400_000, 700_000, 700_000.01, 1_400_000, 2_000_000, 5_000_000):
+            for months in (12, 120):
+                assert P.sba_upfront_fee(amt, fy, months=months) <= P.sba_fee_ceiling(amt) + 1e-6
+
+
+@pytest.mark.parametrize("fy", [2026, 2027])
+def test_sba_fee_matches_official_notices(fy):
+    """SBA Information Notices 5000-872051 (FY2026) and 5000-881797 (FY2027) worked checks."""
+    assert P.sba_upfront_fee(100_000, fy, months=12) == pytest.approx(212.50)          # 0.25% x $85,000
+    assert P.sba_upfront_fee(2_000_000, fy, months=120) == pytest.approx(53_750.00)    # 3.5% + 3.75% over $1M
+    assert P.sba_upfront_fee(100_000, fy) == pytest.approx(1_700.00)                   # 2% x $85,000
+    assert P.sba_upfront_fee(500_000, fy) == pytest.approx(11_250.00)                  # 3% x $375,000
+    assert P.sba_upfront_fee(600_000, fy, zero_fee_eligible=True) == 0.0
+
+
+def test_sba_zero_fee_cap_changed_in_fy2027():
+    assert P.sba_upfront_fee(900_000, 2026, zero_fee_eligible=True) == 0.0      # FY2026 cap $950,000
+    assert P.sba_upfront_fee(900_000, 2027, zero_fee_eligible=True) > 0        # FY2027 cap $700,000
+
+
+def test_sba_unloaded_fiscal_year_is_a_clear_error():
+    with pytest.raises(ValueError, match="FY2030 are not loaded"):
+        P.sba_upfront_fee(100_000, 2030)
+    assert P.fiscal_year(date(2026, 10, 1)) == 2027 and P.fiscal_year(date(2026, 9, 30)) == 2026
+
+
+def test_sba_programs_and_90_day_rule():
+    assert P.sba_upfront_fee(100_000, 2027, months=24, program="wcp") == pytest.approx(446.25)
+    assert P.sba_upfront_fee(100_000, 2027, program="express_veteran") == 0.0
+    # two $100,000 long-term loans within 90 days: combined fee $4,500, $1,700 already charged -> $2,800
+    assert P.sba_upfront_fee(100_000, 2027, prior_90_day_amount=100_000, prior_90_day_fee=1_700) == \
+        pytest.approx(2_800.0)
+    with pytest.raises(ValueError):
+        P.sba_upfront_fee(100_000, 2027, rate=-0.02)
+
+
+def test_sba_fee_year_follows_approval_date():
+    from capkit.products import sba_7a
+    s = sba_7a(800_000, prime=0.07, zero_fee_eligible=True, approval_date="2026-09-30", funding_date="2026-10-02")
+    assert s.terms["upfront_fee"] == 0.0 and s.terms["fiscal_year"] == 2026          # FY2026 cap $950,000
+    s = sba_7a(800_000, prime=0.07, zero_fee_eligible=True, funding_date="2026-10-02")
+    assert s.terms["upfront_fee"] > 0 and any("APPROVAL" in n for n in s.notes)
+    assert any("EXAMPLE placeholder" in n for n in sba_7a(100_000).notes)
+
+
+def test_sba_tier_boundaries_have_no_gap():
+    from capkit.optimize.model import sba_tiers
+    tiers = sba_tiers({"name": "SBA", "weeks": [1, 4], "min": 25_000, "max": 400_000, "prime": 0.07})
+    for amt in (50_000.0, 50_000.01, 50_000.5, 150_000.01, 250_000.5):
+        assert any(t["min"] - 1e-9 <= amt <= t["max"] + 1e-9 for t in tiers), amt
 
 
 def test_factoring_and_trade_credit_and_loc_and_lease():
@@ -122,7 +169,7 @@ def test_disclosure_estimate_and_both_methods():
     a, u = est["estimated_apr_actuarial"], est["estimated_apr_us_rule"]
     assert "actuarial" in D.check_disclosed_apr(a, est)["verdict"]
     assert "U.S. Rule" in D.check_disclosed_apr(u, est)["verdict"]
-    assert D.check_disclosed_apr(0.35, est)["verdict"] == "inconsistent with both permitted methods"
+    assert D.check_disclosed_apr(0.35, est)["verdict"] == "not reproduced by either permitted method with these inputs"
 
 
 def test_zero_payment_schedule_disclosure_check_accepts_us_rule():
@@ -130,15 +177,41 @@ def test_zero_payment_schedule_disclosure_check_accepts_us_rule():
     from capkit.apr import apr_actuarial, apr_us_rule
     f = [(0, 10000)] + [(k, -1150) for k in range(3, 13)]
     comp = {"estimated_apr_actuarial": apr_actuarial(f, "month"), "estimated_apr_us_rule": apr_us_rule(f, "month")}
-    assert D.check_disclosed_apr(0.229843, comp)["verdict"] == "consistent (U.S. Rule method)"
-    assert D.check_disclosed_apr(0.228099, comp)["verdict"] == "consistent (actuarial method)"
-    assert D.check_disclosed_apr(0.2450, comp)["verdict"] == "inconsistent with both permitted methods"
+    assert "U.S. Rule method" in D.check_disclosed_apr(0.229843, comp)["verdict"]
+    assert "actuarial method" in D.check_disclosed_apr(0.228099, comp)["verdict"]
+    # an under-disclosure beyond 1/8 point and beyond the 2.5% signed difference is not reproduced
+    assert D.check_disclosed_apr(0.2100, comp)["verdict"] == "not reproduced by either permitted method with these inputs"
+    # an over-disclosure within the signed 2.5% rule (CA 10 CCR 955(a)) is accurate
+    assert D.check_disclosed_apr(0.2450, comp)["verdict"].startswith("consistent")
 
 
-def test_ny_percentage_tolerance():
+def test_ca_955_and_ny_600_4_percentage_tolerance():
     comp = {"estimated_apr_actuarial": 1.00, "estimated_apr_us_rule": 1.00}
-    assert D.check_disclosed_apr(0.98, comp, "NY")["verdict"].startswith("consistent")      # 2.0% difference
-    assert not D.check_disclosed_apr(0.98, comp, "CA")["verdict"].startswith("consistent")
+    for st in ("CA", "NY"):
+        assert D.check_disclosed_apr(0.98, comp, st)["verdict"].startswith("consistent")    # 2.04% signed
+        assert D.check_disclosed_apr(0.90, comp, st)["verdict"].startswith("not reproduced")  # 11.1%
+    half = {"estimated_apr_actuarial": 0.50, "estimated_apr_us_rule": 0.50}
+    assert D.check_disclosed_apr(0.49, half, "CA")["verdict"].startswith("consistent")       # Codex case
+
+
+def test_irregular_tolerance_is_detected_from_the_schedule():
+    est = D.estimate(100, 120, 0.05, 1000, "business_day", "2027-01-04", split_schedule=[[1, 0.05], [2, 0.10]])
+    assert est["irregular"] is True
+    stepped = est["estimated_apr_actuarial"]
+    flat = D.estimate(100, 120, 0.10, 1000)["estimated_apr_actuarial"]
+    assert abs(stepped - flat) > 0.05          # a stepped split changes the schedule and the APR
+
+
+def test_coverage_uses_amount_financed():
+    est = D.estimate(490_000, 700_000, 0.10, 400_000, paid_on_behalf=30_000)
+    assert est["amount_financed"] == 520_000 and est["covered"] is False
+
+
+def test_bad_disclosed_apr_inputs_are_rejected():
+    comp = {"estimated_apr_actuarial": 0.5, "estimated_apr_us_rule": 0.5}
+    for bad in (float("nan"), -0.1, 67.81):
+        with pytest.raises(ValueError):
+            D.check_disclosed_apr(bad, comp)
 
 
 # ---------------------------------------------------------------- params freshness + API
@@ -153,6 +226,7 @@ def test_api_list_and_cli_roundtrip():
     out = subprocess.run([sys.executable, "-m", "capkit", "early_pay_cost", '{"discount": 0.02}'],
                          capture_output=True, text=True, cwd=ROOT, env={"PYTHONPATH": str(ROOT / "src")})
     assert round(json.loads(out.stdout)["result"]["nominal"], 4) == 0.3724
-    bad = subprocess.run([sys.executable, "-m", "capkit", "sba_fee", '{"amount": 100000, "rate": 0.03}'],
+    bad = subprocess.run([sys.executable, "-m", "capkit", "sba_fee",
+                          '{"amount": 100000, "rate": 0.03, "approval_date": "2026-11-01"}'],
                          capture_output=True, text=True, cwd=ROOT, env={"PYTHONPATH": str(ROOT / "src")})
     assert "statutory ceiling" in json.loads(bad.stdout)["error"]

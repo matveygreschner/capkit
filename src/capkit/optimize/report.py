@@ -37,6 +37,12 @@ def optimize(scenario: dict, H: float = 0.0, force=None, time_limit: float = 60.
                 "message": "No plan keeps cash above the floor with these offers." if r["status"] == 2 else r["message"]}
     plan = extract_plan(m, info, r["x"])
     check = evaluate(scenario, plan, H=H, tol=1e-4)
+    agrees = check["feasible"] and abs(check["terminal_net_position"] - r["objective"]) <= 1e-4 * max(1.0, abs(r["objective"]))
+    if not agrees:
+        return {"status": "failed re-pricing check: the plan is NOT shown as optimal", "optimal": False,
+                "objective": r["objective"], "plan": plan, "check": check,
+                "message": "The solver's plan did not pass the independent re-pricing of every cash flow; "
+                           "report this as a bug instead of using the plan."}
     return {"status": "optimal" if r["optimal"] else r.get("label", r["message"]), "optimal": r["optimal"],
             "objective": r["objective"], "plan": plan, "check": check, "seconds": r["seconds"],
             "binaries": sum(m.integer), "variables": len(m.names), "H": H}

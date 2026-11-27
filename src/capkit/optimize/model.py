@@ -78,7 +78,7 @@ def sba_tiers(o: dict) -> List[dict]:
     prime = o.get("prime", P.param("prime_rate"))
     lo, hi = o.get("min", 25_000), o["max"]
     fy = o.get("fy", 2026)
-    bounds = sorted(({b for b, _ in P.param("sba_max_spread")} | {b for b, _ in P.param("sba_fee_fy")[fy]}
+    bounds = sorted(({b for b, _ in P.param("sba_max_spread")} | {b for b, _ in P.param("sba_fee_fy")[fy]["tiers"]}
                      | {150_000}) - {math.inf})
     edges, cur = [], lo
     for b in bounds:
@@ -86,7 +86,7 @@ def sba_tiers(o: dict) -> List[dict]:
             break
         if b >= cur:
             edges.append((cur, b))
-            cur = b + 1
+            cur = round(b + 0.01, 2)
     edges.append((cur, hi))
     tiers = []
     for k, (a, b) in enumerate(edges, 1):

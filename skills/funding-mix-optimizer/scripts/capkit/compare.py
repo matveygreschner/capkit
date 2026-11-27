@@ -15,6 +15,7 @@ owner's return with and without the deduction. These treatments need a tax profe
 """
 from __future__ import annotations
 
+import math
 from typing import List
 
 from .products import analyze, build
@@ -22,10 +23,21 @@ from .products import analyze, build
 
 def after_tax_cost(finance_charge: float, character: str, marginal_rate: float,
                    interest_limited: bool = False) -> dict:
+    if not (isinstance(marginal_rate, (int, float)) and math.isfinite(marginal_rate) and 0 <= marginal_rate < 1):
+        raise ValueError("marginal_rate must be a decimal from 0 to below 1 (e.g. 0.30 for 30%)")
     deductible = {"interest": not interest_limited, "character_uncertain": True, "rent": True,
-                  "purchase_cost": True}.get(character, False)
+                  "purchase_cost": True, "conditional_sale_likely": False}.get(character, False)
     cost = finance_charge * (1 - marginal_rate * deductible)
-    out = {"after_tax_finance_charge": round(cost, 2), "assumed_deductible": deductible}
+    out = {"after_tax_finance_charge": round(cost, 2), "assumed_deductible": deductible,
+           "basis": "illustration: finance charge x (1 - marginal rate) when treated as deductible; real "
+                    "timing and limits depend on the return"}
+    if character == "conditional_sale_likely":
+        out["flag"] = ("A nominal buyout usually makes this a purchase (conditional sale), not rent: the business "
+                       "would depreciate the equipment and deduct an interest component instead. No after-tax "
+                       "figure is computed; ask a tax professional.")
+        out["after_tax_finance_charge"] = None
+    if character == "rent":
+        out["flag"] = "Assumes a true lease (rent is deductible). Confirm the lease's tax treatment."
     if character == "character_uncertain":
         alt = finance_charge * (1 - marginal_rate * (not interest_limited))
         out["if_treated_as_interest"] = round(alt, 2)

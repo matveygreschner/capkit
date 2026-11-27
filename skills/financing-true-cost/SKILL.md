@@ -5,7 +5,8 @@ description: Computes what a small-business financing offer really costs, using 
 
 # Financing true cost
 
-Turns any financing offer into one dated cash-flow schedule and prices it the way the law does:
+Turns a financing offer into one dated cash-flow schedule and prices it with the method Regulation Z
+uses:
 **Regulation Z Appendix J APR**, computed by both permitted methods. The math is done by the bundled
 **CapKit** engine. It is tested against every numeric example in Appendix J and against an
 independent spreadsheet recalculation. Do not estimate APRs by hand: the payment-day convention
@@ -57,10 +58,16 @@ Read `references/method.md` for the formulas and conventions, and `references/pa
 every rate and limit with its source and verified-on date.
 
 ## Guardrails
-- An MCA is usually a **purchase of future receivables**, not a loan. Never call it a loan or
+- An MCA is usually structured as a **purchase of future receivables**; whether a particular contract
+  is a loan is a legal question for the contract's terms and a lawyer. Never call it a loan or
   usurious. The APR is a comparison measure, the same one California and New York require for these
   products.
+- The numbers are only as good as the terms entered. Say which terms you assumed, show the schedule,
+  and repeat any `warnings` the engine returns (multiple solving rates, methods that differ, an XIRR it
+  could not compute, a placeholder Prime rate).
+- Never tell a user which offer to take. Show the costs side by side; the choice also depends on
+  timing, eligibility, collateral and the business's own plans.
 - SBA parameters (spreads, fees) change by fiscal year and are flagged `verify` in the parameter
   table. Say so when they drive the answer.
-- Not legal, tax or financial advice. If the user is deciding *which* money to take, or how much and
-  when, hand off to the **funding-mix-optimizer** skill if installed.
+- Not legal, tax or financial advice. After-tax figures are illustrations at the marginal rate given;
+  leases with a nominal buyout get no after-tax figure because they are usually purchases.

@@ -56,8 +56,9 @@ provider's responsibility.
 ## Tolerance
 - **NY 600.4:** 1/8 percentage point; 1/4 for irregular transactions; or a percentage difference
   (determined − disclosed) / disclosed × 100 of **2.5% or less**.
-- **CA:** no separate tolerance provision was located in the subchapter. CapKit compares at the Reg Z
-  1/8 point for reference and labels it that way.
+- **CA 10 CCR 955(a):** the same structure: 1/8 point, 1/4 for irregular transactions, or a signed
+  percentage difference of 2.5% or less. (An earlier version of CapKit missed this section and used
+  the 1/8 point only.)
 
 ## Verify before relying on it
 - The Cal. Fin. Code §22802 text.

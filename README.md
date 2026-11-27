@@ -120,8 +120,12 @@ python scripts/build_skills.py            # dist/*.zip for the released skills
 Open-source Appendix J solvers already exist in other languages: the Ruby gem *Amortizy* and the npm
 package *loan-amortization-calculator*. Free pre-signing calculators exist too (NerdWallet, Nav,
 Merchant Maverick, FundingEstimate, usfundingclimate), as do AI contract readers (DebtMedx, 8x,
-AuditDeal) and paid reconciliation services from law and debt-relief firms. CapKit doesn't claim to
-be the first APR calculator. Its products are aimed at the questions those tools leave to paid help.
+AuditDeal) and paid reconciliation services from law and debt-relief firms. For the after-signing
+moment, Delancey Street's free calculator and BusCalc compare one period's receipts × the contract
+percentage with the debits, and FundingTracker flags debits that differ from the fixed schedule.
+CapKit doesn't claim to be the first APR calculator or the only reconciliation calculator. Remit's
+aim is a multi-period audit from the merchant's own exported statements, request deadlines, honest
+value figures and an evidence packet, open source and with no sales funnel behind it.
 
 ## Limits and legal
 
