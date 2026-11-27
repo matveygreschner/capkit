@@ -44,6 +44,37 @@ UNITS = {
 }
 
 
+class _Units(dict):
+    """The named unit-periods plus any multiple of a week (up to 52) or a month (up to 12), written
+    e.g. "6week" or "4month" (Appendix J (b)(3)(iii): multiples of a week or a month up to a year)."""
+
+    def _parse(self, key):
+        import re
+        m = re.fullmatch(r"(\d+)(week|month)", str(key))
+        if not m:
+            return None
+        k, kind = int(m.group(1)), m.group(2)
+        if kind == "week" and 1 <= k <= 52:
+            return (52 / k, "days", 7 * k)
+        if kind == "month" and 1 <= k <= 12:
+            return (12 / k, "month", 1) if k == 1 else (12 / k, "months30", 30 * k)
+        return None
+
+    def __missing__(self, key):
+        v = self._parse(key)
+        if v is None:
+            raise KeyError(f"unknown unit-period {key!r}")
+        return v
+
+    def __contains__(self, key):
+        return dict.__contains__(self, key) or self._parse(key) is not None
+
+
+UNITS = _Units(UNITS)
+_MONTH_NAMES = {1: "month", 2: "bimonth", 3: "quarter", 6: "semiannual", 12: "year"}
+_WEEK_NAMES = {1: "week", 2: "biweek", 3: "3week", 4: "4week"}
+
+
 @dataclass(frozen=True)
 class Flow:
     when: Union[date, float]
@@ -73,20 +104,29 @@ def _is_month_end(d: date) -> bool:
 
 
 def _exact_interval(a: date, b: date):
-    """The standard interval the gap a -> b is EXACTLY (month steps honour month-end clamping), or the
-    raw day count when it is none. Inexact gaps never merge into a standard interval, so irregular
-    schedules cannot manufacture a common period."""
-    for name, k in (("year", 12), ("semiannual", 6), ("quarter", 3), ("bimonth", 2), ("month", 1)):
-        if add_months(a, k) == b or (_is_month_end(b) and add_months(a, k).month == b.month
-                                     and add_months(a, k).year == b.year and a.day >= b.day):
-            return name
+    """The standard interval the gap a -> b is EXACTLY: a multiple of a month (checked first, so Feb 1 ->
+    Mar 1 is a month, not four weeks; month-end clamping honoured), a semimonth, or a multiple of a week,
+    up to a year. Otherwise the raw day count, so irregular gaps never merge into a common period."""
+    for k in range(12, 0, -1):
+        f = add_months(a, k)
+        if f == b or (_is_month_end(b) and f.month == b.month and f.year == b.year and a.day >= b.day):
+            return _MONTH_NAMES.get(k, f"{k}month")
     days = (b - a).days
-    if 13 <= days <= 16 and {a.day, b.day} <= {1, 15, 16} | {a.day if _is_month_end(a) else 0, b.day if _is_month_end(b) else 0}:
-        return "semimonth"
-    for name, size in _STANDARD_DAYS.items():
-        if days == size:
-            return name
+    if 13 <= days <= 17:
+        same = (a.year, a.month) == (b.year, b.month)
+        if (same and (b.day - a.day == 15 or (a.day == 15 and _is_month_end(b)))) or \
+                (not same and (a.day - b.day == 15 or (_is_month_end(a) and b.day == 15))):
+            return "semimonth"
+    if days == 1:
+        return "day"
+    if days % 7 == 0 and 1 <= days // 7 <= 52:
+        k = days // 7
+        return _WEEK_NAMES.get(k, f"{k}week")
     return days
+
+
+def _approx_days(name) -> float:
+    return _APPROX.get(name) or 365.25 / UNITS[name][0]
 
 
 def infer_unit(dates: Sequence[date], advances: Sequence[date] = ()) -> str:
@@ -104,7 +144,7 @@ def infer_unit(dates: Sequence[date], advances: Sequence[date] = ()) -> str:
         return "month"
     kinds = [_exact_interval(a, b) for a, b in gaps]
     counts = Counter(kinds)
-    days = lambda k: _APPROX[k] if isinstance(k, str) else k
+    days = lambda k: _approx_days(k) if isinstance(k, str) else k
     top = max(counts.values())
     commons = [k for k, c in counts.items() if c == top]
     if (top >= 2 or len(kinds) == 1):
@@ -120,22 +160,19 @@ def infer_unit(dates: Sequence[date], advances: Sequence[date] = ()) -> str:
 
 
 def _back(d: date, months: int, anchor: int | None = None) -> date:
-    """``months`` before ``d``. A payment that fell on a short month's last day because its contractual
-    day (``anchor``, e.g. the 30th or 31st) does not exist steps back to that contractual day
-    (Appendix J (b)(3)(iv): month-end series run last day to last day)."""
+    """``months`` before ``d``. ``anchor`` is the payment series' nominal day of the month: a payment on a
+    short month's last day whose nominal day does not exist there (the 30th in February) steps back to
+    the nominal day, so a month-end or 30th-of-month series runs whole months (Appendix J (b)(3)(iv))."""
     p = add_months(d, -months)
     if anchor and _is_month_end(d) and d.day < anchor:
         last = (date(p.year + (p.month == 12), p.month % 12 + 1, 1) - timedelta(1)).day
         p = p.replace(day=min(anchor, last))
-    elif _is_month_end(d) and anchor is None:
-        p = date(p.year + (p.month == 12), p.month % 12 + 1, 1) - timedelta(1)
     return p
 
 
-def _months_back(base: date, d: date, step: int = 1):
+def _months_back(base: date, d: date, step: int = 1, anchor: int | None = None):
     """Full ``step``-month periods measured back from ``d`` without passing ``base``, and the date reached."""
     t, cur = 0, d
-    anchor = base.day if base.day > 28 else None
     while True:
         prev = _back(d, (t + 1) * step, anchor)
         if prev < base:
@@ -143,7 +180,17 @@ def _months_back(base: date, d: date, step: int = 1):
         cur, t = prev, t + 1
 
 
-def period_position(base: date, d: date, unit: str) -> Tuple[int, float]:
+def series_day(dates: Sequence[date]) -> int:
+    """Nominal day of the month of a payment series: the most common day among payments that are not
+    on a month's last day; 31 (month-end) if every payment is on a month's last day."""
+    regular = [d.day for d in dates if not _is_month_end(d)]
+    if not regular:
+        return 31
+    c = Counter(regular)
+    return max(c, key=lambda k: (c[k], -k))
+
+
+def period_position(base: date, d: date, unit: str, anchor: int | None = None) -> Tuple[int, float]:
     """(t, f): whole unit-periods and the remaining fraction from ``base`` to ``d`` (Appendix J (b)(5)).
 
     * (ii) monthly: full months measured back from the later date; the remaining days, counted forward
@@ -161,15 +208,15 @@ def period_position(base: date, d: date, unit: str) -> Tuple[int, float]:
         return days // size, (days % size) / size
     dpm = param("appj_days_per_month")
     if rule == "month":
-        t, cur = _months_back(base, d)
+        t, cur = _months_back(base, d, 1, anchor)
         return t, (cur - base).days / dpm
     if rule == "months30":
-        months, cur = _months_back(base, d)
+        months, cur = _months_back(base, d, 1, anchor)
         days = dpm * months + (cur - base).days
         return int(days // size), (days % size) / size
     # year
-    t, cur = _months_back(base, d, 12)
-    months, cur2 = _months_back(base, cur)
+    t, cur = _months_back(base, d, 12, anchor)
+    months, cur2 = _months_back(base, cur, 1, anchor)
     if cur2 == base:
         return t, months / 12
     return t, (cur - base).days / 365
@@ -179,7 +226,9 @@ def _positions(flows: List[Flow], unit: str):
     if all(isinstance(f.when, (int, float)) for f in flows):
         return [(int(math.floor(f.when + 1e-12)), f.when - math.floor(f.when + 1e-12), f.amount) for f in flows]
     base = min(f.when for f in flows)    # zero point: the earliest flow (Appendix J (c)(7)(ii))
-    return [period_position(base, f.when, unit) + (f.amount,) for f in flows]
+    pays = [f.when for f in flows if f.amount < 0]
+    anchor = series_day(pays) if pays else None
+    return [period_position(base, f.when, unit, anchor) + (f.amount,) for f in flows]
 
 
 def _pv(pos, i):
@@ -396,6 +445,44 @@ def simple_annualized(net_advance: float, total_repaid: float, term_years: float
     return (total_repaid - net_advance) / net_advance / term_years
 
 
+def irregular_features(flows) -> List[str]:
+    """Why a transaction is "irregular" for the 1/4-point tolerance (12 CFR 1026.22(a)(3); CA 10 CCR
+    955(a)(2)): more than one advance; payment periods that are not all the same (the first period is
+    ignored); payment amounts that differ (the first and last payments are ignored). An empty list means
+    regular. A business-day debit series mixes 1-day and weekend gaps, so on a literal reading its payment
+    periods are irregular."""
+    fl = sorted(_flows(flows), key=lambda f: (f.when if isinstance(f.when, (int, float)) else f.when.toordinal()))
+    adv = [f for f in fl if f.amount > 0]
+    pay = [f for f in fl if f.amount < 0]
+    out = []
+    if len(adv) > 1:
+        out.append("more than one advance")
+    if len(pay) >= 3:
+        if all(isinstance(f.when, date) for f in pay):
+            kinds = {_exact_interval(a.when, b.when) for a, b in zip(pay, pay[1:])}
+        else:
+            kinds = {round(b.when - a.when, 9) for a, b in zip(pay, pay[1:])}
+        if len(kinds) > 1:
+            out.append("irregular payment periods")
+    middle = [round(-f.amount, 2) for f in pay[1:-1]]
+    if len(set(middle)) > 1:
+        out.append("irregular payment amounts")
+    return out
+
+
+def finance_charge_at_apr(flows, annual_rate: float, unit: str) -> float:
+    """The finance charge a schedule would have if its APR were ``annual_rate``: total payments minus the
+    amount financed that ``annual_rate`` implies (the actuarial present value of the payments)."""
+    fl = _flows(flows)
+    pos = _positions(fl, unit)
+    i = annual_rate / UNITS[unit][0]
+    pay = [(t, f, -a) for t, f, a in pos if a < 0]
+    implied_af = sum(a * math.exp(-t * math.log1p(i)) / (1 + f * i) for t, f, a in pay)
+    adv_pv = sum(a * math.exp(-t * math.log1p(i)) / (1 + f * i) for t, f, a in pos if a > 0)
+    total = sum(a for _, _, a in pay)
+    return total - implied_af + 0 * adv_pv
+
+
 def within_tolerance(disclosed: float, computed: float, irregular: bool = False) -> bool:
     tol = param("regz_tolerance_irregular" if irregular else "regz_tolerance_regular") / 100
     return abs(disclosed - computed) <= tol + 1e-12
@@ -409,7 +496,7 @@ def apr_single_payment(advance: float, payment: float, advance_date, payment_dat
     with the general equation."""
     d0, d1 = parse(advance_date), parse(payment_date)
     if add_months(d0, 12) > d1:
-        months, cur = _months_back(d0, d1)
+        months, cur = _months_back(d0, d1, 1, d0.day if d0.day > 28 else None)
         w = 12 / months if (cur == d0 and months) else 365 / (d1 - d0).days
         return w * (payment / advance - 1)
     return apr_actuarial([(d0, advance), (d1, -payment)], "year")

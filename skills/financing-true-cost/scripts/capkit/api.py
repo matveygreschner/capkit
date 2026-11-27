@@ -91,9 +91,11 @@ def disclosure_estimate(funding_provided: float, total_owed: float, split_rate: 
         if not monthly_sales:
             raise ValueError("give avg_monthly_sales or monthly_sales")
         avg_monthly_sales = D.historical_average(monthly_sales, window, state, window_method, exclude_months or ())
-    return D.estimate(funding_provided, total_owed, split_rate, avg_monthly_sales, frequency, funding_date,
-                      prepaid_fees, minimum_payment, state=state, paid_on_behalf=paid_on_behalf,
-                      split_schedule=split_schedule)
+    est = D.estimate(funding_provided, total_owed, split_rate, avg_monthly_sales, frequency, funding_date,
+                     prepaid_fees, minimum_payment, state=state, paid_on_behalf=paid_on_behalf,
+                     split_schedule=split_schedule)
+    est.pop("_schedule", None)
+    return est
 
 
 def check_disclosure(disclosed_apr: float, funding_provided: float, total_owed: float, split_rate: float,
@@ -107,10 +109,34 @@ def check_disclosure(disclosed_apr: float, funding_provided: float, total_owed: 
     by the actuarial method, the U.S. Rule method, both, or neither, within the CA 10 CCR 955 / NY 23
     NYCRR 600.4 tolerances. ``irregular`` is detected from the schedule unless given. A non-match is
     not proof of an error."""
-    est = disclosure_estimate(funding_provided, total_owed, split_rate, avg_monthly_sales, monthly_sales,
-                              window, window_method, state, frequency, funding_date, prepaid_fees, minimum_payment,
-                              paid_on_behalf, split_schedule, exclude_months)
-    return {"recomputed": est, "check": D.check_disclosed_apr(disclosed_apr, est, state, irregular)}
+    if avg_monthly_sales is None:
+        if not monthly_sales:
+            raise ValueError("give avg_monthly_sales or monthly_sales")
+        avg_monthly_sales = D.historical_average(monthly_sales, window, state, window_method, exclude_months or ())
+    est = D.estimate(funding_provided, total_owed, split_rate, avg_monthly_sales, frequency, funding_date,
+                     prepaid_fees, minimum_payment, state=state, paid_on_behalf=paid_on_behalf,
+                     split_schedule=split_schedule)
+    check = D.check_disclosed_apr(disclosed_apr, est, state, irregular)
+    out = {"recomputed": est, "check": check}
+    if frequency == "business_day":
+        # Debit calendars differ (Federal Reserve holidays or not); either can be a reasonable estimate
+        # (CA 10 CCR 901(a)(16) and 12 CFR 1026.17(c)(3) disregard minor irregularities).
+        avg = est["assumed_average_monthly_sales"]
+        alt = D.estimate(funding_provided, total_owed, split_rate, avg, frequency, funding_date, prepaid_fees,
+                         minimum_payment, holidays=None, state=state, paid_on_behalf=paid_on_behalf,
+                         split_schedule=split_schedule)
+        alt_check = D.check_disclosed_apr(disclosed_apr, alt, state, irregular)
+        out["no_holiday_calendar"] = {"estimated_apr_actuarial": alt["estimated_apr_actuarial"],
+                                      "estimated_apr_us_rule": alt["estimated_apr_us_rule"],
+                                      "verdict": alt_check["verdict"]}
+        if check["verdict"].startswith("not reproduced") and alt_check["verdict"].startswith("consistent"):
+            check["verdict"] = "consistent on the no-holiday debit calendar (" + alt_check["verdict"][12:-1] + ")"
+    sched, unit = est.pop("_schedule"), est["unit_period"]
+    if disclosed_apr > 0:
+        check["finance_charge_implied_by_disclosed_apr"] = round(A.finance_charge_at_apr(sched, disclosed_apr, unit), 2)
+        check["finance_charge_recomputed"] = est["finance_charge"]
+    out.get("no_holiday_calendar", {}).pop("_schedule", None)
+    return out
 
 
 def optimize_mix(scenario: dict, carries: list = (0, 52), sensitivity: bool = True, time_limit: float = 60.0):

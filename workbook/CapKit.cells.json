@@ -88,6 +88,7 @@
   "sba_fee_in": "B16",
   "sba_fee_ok": "B23",
   "sba_fee_rate": "B20",
+  "sba_final": "B26",
   "sba_max_spread": "B17",
   "sba_months": "B15",
   "sba_payment": "B24",
@@ -98,6 +99,7 @@
   "tl_apr": "B8",
   "tl_fc": "B9",
   "tl_fee": "B6",
+  "tl_final": "B10",
   "tl_months": "B5",
   "tl_payment": "B7",
   "tl_rate": "B4"

@@ -23,7 +23,7 @@ def test_single_advance_single_payment_uses_term_as_unit():
 def test_month_end_series_counts_whole_months():
     # a fee-free 12% loan funded Jan 31 with month-end payments is exactly 12%, not 12.05%
     s = term_loan(10000, 0.12, 12, funding_date="2027-01-31")
-    assert abs(analyze(s)["apr_actuarial"] - 0.12) < 1e-9
+    assert abs(analyze(s)["apr_actuarial"] - 0.12) < 1e-5     # cent-rounded; the old bug gave 12.05%
 
 
 @pytest.mark.parametrize("dates,unit", [
@@ -65,7 +65,7 @@ def test_irregular_and_multiple_advance_unit_periods():
     g = [(d(2027, 1, 1), 100), (d(2027, 1, 8), -20), (d(2027, 1, 22), 100), (d(2027, 1, 29), -100),
          (d(2027, 2, 19), -100)]
     assert round(A.apr_actuarial(g) * 100, 2) == 143.38                 # common 21-day period
-    assert abs(analyze(term_loan(10000, 0.12, 12, funding_date="2027-01-30"))["apr_actuarial"] - 0.12) < 1e-9
+    assert abs(analyze(term_loan(10000, 0.12, 12, funding_date="2027-01-30"))["apr_actuarial"] - 0.12) < 1e-5
 
 
 # ---------------------------------------------------------------- products
