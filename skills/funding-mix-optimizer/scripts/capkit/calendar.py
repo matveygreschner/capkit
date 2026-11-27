@@ -7,7 +7,7 @@ that Friday, so an ACH debit still settles. Source: Federal Reserve Financial Se
 from __future__ import annotations
 
 from datetime import date, timedelta
-from functools import lru_cache
+from functools import cache
 
 
 def _nth_weekday(year: int, month: int, weekday: int, n: int) -> date:
@@ -21,7 +21,7 @@ def _last_weekday(year: int, month: int, weekday: int) -> date:
     return d - timedelta((d.weekday() - weekday) % 7)
 
 
-@lru_cache(maxsize=None)
+@cache
 def frb_holidays(year: int) -> frozenset:
     """Federal Reserve Bank holidays observed in ``year``."""
     fixed = [date(year, 1, 1), date(year, 6, 19), date(year, 7, 4), date(year, 11, 11), date(year, 12, 25)]
@@ -43,8 +43,8 @@ def frb_holidays(year: int) -> frozenset:
 
 
 def _holiday_set(holidays):
-    if holidays in ("frb", None, False) or isinstance(holidays, (set, frozenset)) and all(
-            isinstance(h, date) for h in holidays):
+    if holidays in ("frb", None, False) or (isinstance(holidays, (set, frozenset)) and all(
+            isinstance(h, date) for h in holidays)):
         return holidays
     return frozenset(parse(h) for h in holidays)      # accept ISO strings as well as dates
 
@@ -62,7 +62,8 @@ def is_business_day(d: date, holidays="frb") -> bool:
 def business_days_after(start: date, n: int, holidays="frb") -> list:
     """The next ``n`` business days strictly after ``start``."""
     holidays = _holiday_set(holidays)
-    out, d = [], start
+    out: list = []
+    d = start
     while len(out) < n:
         d += timedelta(1)
         if is_business_day(d, holidays):

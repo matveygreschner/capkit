@@ -21,7 +21,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from capkit import api, params as P  # noqa: E402
+from capkit import api
+from capkit import params as P
 
 SKILLS = ROOT / "skills"
 DIST = ROOT / "dist"

@@ -2,11 +2,11 @@
 from __future__ import annotations
 
 import copy
-import math
+from typing import Any, Dict
 
+from ..verify.reprice import evaluate
 from .model import NEVER, build_model
 from .solve import solve
-from ..verify.reprice import evaluate
 
 
 def extract_plan(model, info, x, tol=1e-6) -> dict:
@@ -20,7 +20,7 @@ def extract_plan(model, info, x, tol=1e-6) -> dict:
             if amt > tol:
                 fundings.append({"offer": name, "week": s, "amount": round(amt, 6),
                                  "prepay_week": None if u == NEVER else u})
-    plan = {"fundings": sorted(fundings, key=lambda f: f["week"])}
+    plan: Dict[str, Any] = {"fundings": sorted(fundings, key=lambda f: f["week"])}
     if ("b", 1) in model.index:
         plan["loc_balance"] = [max(0.0, v(("b", t))) for t in range(1, T + 1)]
     plan["early_pay"] = {n: round(v(("e", n)), 9) for n in info["E"] if v(("e", n)) > tol}
@@ -69,7 +69,7 @@ def _describe(plan, info_offers=None):
 def run(scenario: dict, carries=(0, 52), sensitivity: bool = True, time_limit: float = 60.0) -> dict:
     """Full report: optimal plan at each post-horizon carry H, the baseline, savings, and the effect of
     moving the cash floor (parametric re-solves, not shadow prices)."""
-    out = {"scenario": scenario.get("name"), "results": {}}
+    out: Dict[str, Any] = {"scenario": scenario.get("name"), "results": {}}
     base_force = (scenario.get("baseline") or {}).get("force")
     for H in carries:
         best = optimize(scenario, H=H, time_limit=time_limit)
@@ -87,8 +87,11 @@ def run(scenario: dict, carries=(0, 52), sensitivity: bool = True, time_limit: f
         base_obj = out["results"]["H=0"]["optimal"]["objective"]
         for delta in (-5000, -1000, 1000, 5000):
             sc = copy.deepcopy(scenario)
-            fl = sc.get("cash_floor", 0.0)
-            sc["cash_floor"] = [max(0.0, v + delta) for v in fl] if isinstance(fl, list) else max(0.0, fl + delta)
+            fl: Any = sc.get("cash_floor", 0.0)
+            if isinstance(fl, list):
+                sc["cash_floor"] = [max(0.0, v + delta) for v in fl]
+            else:
+                sc["cash_floor"] = max(0.0, float(fl) + delta)
             r = optimize(sc, H=0, time_limit=time_limit)
             sens.append({"cash_floor_change": delta,
                          "terminal_change": None if r.get("objective") is None else r["objective"] - base_obj})

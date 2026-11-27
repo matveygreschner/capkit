@@ -25,8 +25,8 @@ twelve months after funding on the Federal Reserve calendar.
 from __future__ import annotations
 
 import math
-from datetime import timedelta
-from typing import List, Optional, Sequence
+from datetime import date, timedelta
+from typing import Sequence, cast
 
 from . import apr as A
 from . import params as P
@@ -130,7 +130,7 @@ def estimate(funding_provided: float, total_owed: float, split_rate: float, avg_
         pays.append(amt)
         owed -= amt
     unit = {"business_day": "day", "day": "day", "week": "week", "biweek": "biweek", "month": "month"}[frequency]
-    first, last = flows[0].when, flows[-1].when
+    first, last = cast(date, flows[0].when), cast(date, flows[-1].when)
     term_days = (last - first).days
     total_pay = sum(pays)
     apr_a = A.apr_actuarial(flows, unit)

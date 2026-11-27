@@ -18,11 +18,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-import formulas  # noqa: E402
+import formulas
 
-from capkit import disclosures as D  # noqa: E402
-from capkit import params as P  # noqa: E402
-from capkit.products import analyze, early_pay_cost, factoring, mca_fixed, sba_7a, term_loan  # noqa: E402
+from capkit import disclosures as D
+from capkit import params as P
+from capkit.products import analyze, early_pay_cost, factoring, mca_fixed, sba_7a, term_loan
 
 EXCEL_EPOCH = date(1899, 12, 30)
 

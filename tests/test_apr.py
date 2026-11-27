@@ -9,10 +9,17 @@ from datetime import date
 
 import pytest
 
-from capkit.apr import (UNITS, apr_actuarial, apr_us_rule, ear, period_position, simple_annualized,
-                        within_tolerance, xirr)
-from capkit.calendar import add_months
 from capkit import apr as A
+from capkit.apr import (
+    apr_actuarial,
+    apr_us_rule,
+    ear,
+    period_position,
+    simple_annualized,
+    within_tolerance,
+    xirr,
+)
+from capkit.calendar import add_months
 
 
 def pct(x):
@@ -33,7 +40,7 @@ def series(start, n, amount, step):
 
 def semimonthly(start, n, amount):
     out, d = [], start
-    for k in range(n):
+    for _k in range(n):
         out.append((d, -amount))
         d = d.replace(day=16) if d.day == 1 else add_months(d.replace(day=1), 1)
     return out

@@ -10,12 +10,11 @@ from __future__ import annotations
 
 import json
 import math
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font, PatternFill
-from openpyxl.utils import get_column_letter as col
+from openpyxl.styles import Font, PatternFill
 from openpyxl.worksheet.datavalidation import DataValidation
 
 from .. import params as P
@@ -75,7 +74,8 @@ def sheet_start(wb, c):
         "Yellow cells are inputs; green cells are results. Every formula is portable to Google Sheets.",
         "",
         "APR - fixed-debit financing (e.g. a weekly MCA) on its unit-period grid: Reg Z Appendix J APR = IRR x periods per year.",
-        "Daily_MCA - a business-day MCA on the calendar-day grid (Appendix J's whole-period case), with the Federal Reserve holiday calendar.",
+        "Daily_MCA - a business-day MCA on the calendar-day grid (Appendix J's whole-period case), "
+        "with the Federal Reserve holiday calendar.",
         "Loans - term loan and SBA 7(a): payment, APR with fees (RATE), SBA fee on the guaranteed portion and its statutory ceiling.",
         "EarlyPay_Factoring - cost of passing up 2/10 net 30, and invoice factoring cost.",
         "Disclosure - California / New York estimated APR, term and payment for sales-based financing (historical method).",

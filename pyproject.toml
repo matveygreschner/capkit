@@ -21,3 +21,29 @@ capkit = "capkit.api:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+target-version = "py39"
+line-length = 140
+extend-exclude = ["skills/*/scripts/capkit"]   # vendored copies of src/capkit
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "I", "UP", "RUF", "SIM", "PIE", "C4"]
+ignore = [
+    "E741",    # single-letter names follow the regulation's notation (A, P, t, f, i)
+    "RUF001", "RUF002", "RUF003",   # typographic characters in docs/strings are intentional
+    "UP006", "UP007", "UP035", "UP045",   # keep typing.List/Optional for Python 3.9 runtime annotations
+    "SIM108",  # ternaries are not always clearer
+    "RUF005",  # [a] + b list building is clearer here than unpacking
+    "E731",    # small named lambdas define the equations being solved
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]
+"scripts/*" = ["E402"]   # scripts put src/ on sys.path before importing capkit
+
+[tool.mypy]
+python_version = "3.9"
+ignore_missing_imports = true
+warn_unused_ignores = true
+exclude = ["skills/"]
