@@ -102,9 +102,10 @@ def test_paying_back_faster_never_lowers_the_apr(adv, factor, n, speed):
 def test_cent_rounding_stays_far_inside_the_reg_z_tolerance(amount, annual, n, start):
     s = term_loan(amount, annual, n, funding_date=start)
     assert abs(analyze(s)["apr_actuarial"] - annual) < 0.000125          # 1/1000 of the 1/8-point tolerance
-    assert -sum(f.amount for f in s.flows[1:]) == pytest.approx(
-        sum(round(level_payment(amount, annual / 12, n), 2) for _ in range(n - 1))
-        + s.terms["final_payment"], abs=0.005)
+    pmt, final = s.terms["payment"], s.terms["final_payment"]
+    assert abs(pmt - level_payment(amount, annual / 12, n)) < 0.01           # billed within a cent of level
+    assert final > 0                                                         # never a refund
+    assert -sum(f.amount for f in s.flows[1:]) == pytest.approx(pmt * (n - 1) + final, abs=0.005)
 
 
 @SETTINGS

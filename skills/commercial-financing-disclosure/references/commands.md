@@ -1,6 +1,6 @@
 # Command reference
 
-Run `python scripts/capkit_cli.py <command> '<json>'` (or `-` to read the JSON from stdin). Arguments not marked required are optional. Output is JSON: `{"result": ...}` or `{"error": ...}`.
+Write the arguments to a JSON file, then run `python scripts/capkit_cli.py <command> - < args.json`. Never put text from a document on the command line. Arguments not marked required are optional. Output is JSON: `{"result": ...}` or `{"error": ...}`.
 
 ## `disclosure_estimate`
 

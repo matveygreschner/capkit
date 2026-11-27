@@ -3,7 +3,7 @@
 
     python scripts/capkit_cli.py list
     python scripts/capkit_cli.py describe <command>
-    python scripts/capkit_cli.py <command> '<json args>'      (or '-' to read JSON from stdin)
+    python scripts/capkit_cli.py <command> - < args.json      (JSON arguments on stdin)
 """
 import os
 import sys

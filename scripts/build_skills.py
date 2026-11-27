@@ -50,7 +50,8 @@ def _fmt(v):
 
 def commands_md(names) -> str:
     out = ["# Command reference", "",
-           "Run `python scripts/capkit_cli.py <command> '<json>'` (or `-` to read the JSON from stdin). "
+           "Write the arguments to a JSON file, then run `python scripts/capkit_cli.py <command> - < args.json`. "
+           "Never put text from a document on the command line. "
            "Arguments not marked required are optional. Output is JSON: `{\"result\": ...}` or `{\"error\": ...}`.", ""]
     for n in names:
         d = api.describe(n)
@@ -87,7 +88,9 @@ def write(path: Path, text: str, check: bool, stale: list):
     path.write_text(text)
 
 
-FROZEN_PACKAGES = ("optimize", "verify")   # the experimental optimizer ships only in its own skill
+FROZEN_PACKAGES = ("optimize", "verify", "excel", "__main__.py")
+# released skills ship only what their allow-listed commands use: no optimizer, no workbook writer, and no
+# `python -m capkit` entry point that would bypass the allow-list
 
 
 CLI_TEMPLATE = '''#!/usr/bin/env python3
@@ -95,7 +98,7 @@ CLI_TEMPLATE = '''#!/usr/bin/env python3
 
     python scripts/capkit_cli.py list
     python scripts/capkit_cli.py describe <command>
-    python scripts/capkit_cli.py <command> '<json args>'      (or '-' to read JSON from stdin)
+    python scripts/capkit_cli.py <command> - < args.json      (JSON arguments on stdin)
 """
 import os
 import sys

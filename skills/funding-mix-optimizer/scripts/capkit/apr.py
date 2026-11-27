@@ -23,7 +23,7 @@ import math
 from collections import Counter
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import List, Sequence, Tuple, Union, cast
+from typing import List, Optional, Sequence, Tuple, Union, cast
 
 from .calendar import add_months, parse
 from .params import param
@@ -109,7 +109,8 @@ def _exact_interval(a: date, b: date):
     up to a year. Otherwise the raw day count, so irregular gaps never merge into a common period."""
     for k in range(12, 0, -1):
         f = add_months(a, k)
-        if f == b or (_is_month_end(b) and f.month == b.month and f.year == b.year and a.day >= b.day):
+        if f == b or (_is_month_end(b) and f.month == b.month and f.year == b.year
+                      and (a.day >= b.day or _is_month_end(a))):
             return _MONTH_NAMES.get(k, f"{k}month")
     days = (b - a).days
     if 13 <= days <= 17:
@@ -123,6 +124,13 @@ def _exact_interval(a: date, b: date):
         k = days // 7
         return _WEEK_NAMES.get(k, f"{k}week")
     return days
+
+
+# Every standard interval of (b)(3)(iii) - a day, a semimonth, any multiple of a week or of a month up
+# to a year - with its approximate length, for rounding an average period ((b)(4)(i)(B)).
+_STANDARD = {"day": 1, "semimonth": 15.2,
+             **{_WEEK_NAMES.get(k, f"{k}week"): 7 * k for k in range(1, 53)},
+             **{_MONTH_NAMES.get(k, f"{k}month"): _APPROX.get(_MONTH_NAMES.get(k, ""), 30.4 * k) for k in range(1, 13)}}
 
 
 def _approx_days(name) -> float:
@@ -156,7 +164,7 @@ def infer_unit(dates: Sequence[date], advances: Sequence[date] = ()) -> str:
     if counts.get(1, 0) >= 2 and counts[1] == top:
         return "day"
     avg = sum((b - a).days for a, b in gaps) / len(gaps)
-    return min(_APPROX, key=lambda n: (abs(_APPROX[n] - avg), _APPROX[n]))
+    return min(_STANDARD, key=lambda n: (abs(_STANDARD[n] - avg), _STANDARD[n]))
 
 
 def _back(d: date, months: int, anchor: int | None = None) -> date:
@@ -181,9 +189,11 @@ def _months_back(base: date, d: date, step: int = 1, anchor: int | None = None):
 
 
 def series_day(dates: Sequence[date]) -> int:
-    """Nominal day of the month of a payment series: the most common day among payments that are not
-    on a month's last day; 31 (month-end) if every payment is on a month's last day."""
-    regular = [d.day for d in dates if not _is_month_end(d)]
+    """Nominal day of the month for payments that fall on a month's last day: the most common late day
+    (28th-30th) among payments that are not on a month's last day, as in a 30th-of-month series whose
+    February payment is the 28th; otherwise 31, a month-end series (Appendix J (b)(3)(iv)). Payments on
+    other days (a mid-month payment in a month-end schedule) do not move it."""
+    regular = [d.day for d in dates if not _is_month_end(d) and d.day >= 28]
     if not regular:
         return 31
     c = Counter(regular)
@@ -338,12 +348,49 @@ def _solve(fn, lo: float = 0.0, hi: float = 1e4) -> float:
     return rs[0]
 
 
-def _rate(fn, neg_floor: float, hi: float = 1e4) -> float:
+def _conventional(keys_amounts) -> bool:
+    """True when every advance sits at the earliest position and every payment at or after it.
+
+    The equation is then strictly increasing in the rate on (-0.5, inf): divide it by the advance's
+    discount factor and each payment's relative factor (1+f0 i)/((1+fk i)(1+i)^(tk-t0)) falls as the rate
+    rises (f0 < 1). So exactly one rate solves it, and bisection finds it without a scan."""
+    adv = {k for k, a in keys_amounts if a > 0}
+    if len(adv) != 1:
+        return False
+    k0 = next(iter(adv))
+    return all(k >= k0 for k, a in keys_amounts if a < 0)
+
+
+def _monotone_root(fn, neg_floor: float, hi: float) -> Optional[float]:
+    """The single root of an increasing ``fn`` in (neg_floor, hi], or None."""
+    f0 = fn(0.0)
+    if f0 == 0:
+        return 0.0
+    if f0 > 0:
+        return _bisect(fn, neg_floor, 0.0) if fn(neg_floor) < 0 else None
+    x = 1e-3
+    while True:
+        try:
+            if fn(x) > 0:
+                return _bisect(fn, x / 4 if x > 1e-3 else 0.0, x)
+        except (OverflowError, ZeroDivisionError):
+            return None
+        if x >= hi:
+            return None
+        x = min(x * 4, hi)
+
+
+def _rate(fn, neg_floor: float, hi: float = 1e4, monotone: bool = False) -> float:
     """Smallest positive solving rate; if none, the solving rate in (neg_floor, 0]."""
     probe = [fn(x) for x in (0.0, 0.01, 0.5)]
     if all(abs(v) < 1e-12 for v in probe):
         raise ValueError("every rate solves these cash flows (advances equal payments at the same time): "
                          "the APR is undefined")
+    if monotone:
+        r = _monotone_root(fn, neg_floor, hi)
+        if r is None:
+            raise ValueError("no APR solves these cash flows (check signs: advances +, payments -)")
+        return r
     rs = roots(fn, 0.0, hi)
     if rs:
         return rs[0]
@@ -356,7 +403,7 @@ def _rate(fn, neg_floor: float, hi: float = 1e4) -> float:
 def periodic_rate_actuarial(flows, unit: str = "month") -> float:
     pos = _positions(_flows(flows), unit)
     fn = lambda i: _pv(pos, i)
-    return _rate(fn, -0.5)
+    return _rate(fn, -0.5, monotone=_conventional([((t, f), a) for t, f, a in pos]))
 
 
 def _single_pair(fl: List[Flow]):
@@ -371,7 +418,10 @@ def _single_pair(fl: List[Flow]):
 def count_rates(flows, unit: str = "month") -> int:
     """How many positive periodic rates solve the actuarial equation (more than one is a warning sign)."""
     pos = _positions(_flows(flows), unit)
-    return len(roots(lambda i: _pv(pos, i), 0.0, 1e4))
+    fn = lambda i: _pv(pos, i)
+    if _conventional([((t, f), a) for t, f, a in pos]):
+        return 0 if _monotone_root(fn, 0.0, 1e4) is None else 1
+    return len(roots(fn, 0.0, 1e4))
 
 
 def apr_actuarial(flows, unit: str | None = None) -> float:
@@ -389,7 +439,7 @@ def apr_actuarial(flows, unit: str | None = None) -> float:
 
 def _us_rule_residual(pos, i):
     """Balance left after the last flow under the U.S. Rule at periodic rate ``i`` (positive = still owed)."""
-    events = sorted(((t + f), a) for t, f, a in pos)
+    events = pos if pos and len(pos[0]) == 2 else sorted(((t + f), a) for t, f, a in pos)
     principal = interest = 0.0
     prev = events[0][0]
     for when, a in events:
@@ -407,8 +457,13 @@ def _us_rule_residual(pos, i):
 
 def periodic_rate_us_rule(flows, unit: str = "month") -> float:
     pos = _positions(_flows(flows), unit)
-    fn = lambda i: _us_rule_residual(pos, i)
-    return _rate(fn, -0.5)
+    events = sorted(((t + f), a) for t, f, a in pos)       # sort once, not on every evaluation
+    fn = lambda i: _us_rule_residual(events, i)
+    # With every advance first, a higher rate accrues more interest, so less of each payment reaches
+    # principal and the final balance cannot fall: one positive root. (Below zero that argument fails,
+    # so a negative rate still gets the full scan.)
+    monotone = _conventional([((t, f), a) for t, f, a in pos]) and fn(0.0) < 0
+    return _rate(fn, -0.5, monotone=monotone)
 
 
 def apr_us_rule(flows, unit: str | None = None) -> float:
@@ -441,7 +496,7 @@ def xirr(flows) -> float:
     base = min(d for d, _ in dated)
     pos = [((d - base).days / 365.0, a) for d, a in dated]
     fn = lambda r: sum(a * math.exp(-y * math.log1p(r)) for y, a in pos)
-    return _rate(fn, -0.9, hi=1e80)
+    return _rate(fn, -0.9, hi=1e80, monotone=_conventional(pos))
 
 
 def simple_annualized(net_advance: float, total_repaid: float, term_years: float) -> float:
