@@ -51,6 +51,13 @@ class Cells:
         return addr
 
 
+def _cent_payment(rate: str, n: str, pv: str) -> str:
+    """The level payment billed in cents, as products.term_loan bills it: rounded to the nearest cent,
+    or down when rounding up would overpay into a refund on the final payment."""
+    up = f"ROUND(PMT({rate},{n},-{pv}),2)"
+    return f"=IF(FV({rate},{n}-1,{up},-{pv})*(1+{rate})<-0.005,ROUNDDOWN(PMT({rate},{n},-{pv})+1E-9,2),{up})"
+
+
 def _label_input(c, ws, row, label, value, name, fmt=None, note=None):
     ws[f"A{row}"] = label
     c.put(ws, f"B{row}", value, name, INPUT, fmt)
@@ -183,7 +190,7 @@ def sheet_loans(wb, c):
     _label_input(c, ws, 4, "Note rate (annual)", 0.15, "tl_rate", PCT)
     _label_input(c, ws, 5, "Term (months)", 24, "tl_months")
     _label_input(c, ws, 6, "Fee withheld", 1500, "tl_fee", USD)
-    _label_out(c, ws, 7, "Monthly payment (billed in cents)", "=ROUND(PMT(B4/12,B5,-B3),2)", "tl_payment", USD)
+    _label_out(c, ws, 7, "Monthly payment (billed in cents)", _cent_payment("B4/12", "B5", "B3"), "tl_payment", USD)
     _label_out(c, ws, 10, "Final payment (absorbs rounding)", "=ROUND(FV(B4/12,B5-1,B7,-B3)*(1+B4/12),2)",
                "tl_final", USD)
     _label_out(c, ws, 8, "APR (Appendix J, monthly unit)",
@@ -211,7 +218,7 @@ def sheet_loans(wb, c):
                "=B19*B12*INDEX($L$4:$L$6,MATCH(B12,$K$4:$K$6,1))+MAX(0,B19*B12-1000000)*0.0025",
                "sba_ceiling", USD)
     _label_out(c, ws, 23, "Fee within ceiling?", '=IF(B21<=B22+0.000001,"OK","ABOVE STATUTORY CEILING")', "sba_fee_ok")
-    _label_out(c, ws, 24, "Monthly payment (billed in cents)", "=ROUND(PMT(B18/12,B15,-B12),2)", "sba_payment", USD)
+    _label_out(c, ws, 24, "Monthly payment (billed in cents)", _cent_payment("B18/12", "B15", "B12"), "sba_payment", USD)
     _label_out(c, ws, 26, "Final payment (absorbs rounding)", "=ROUND(FV(B18/12,B15-1,B24,-B12)*(1+B18/12),2)",
                "sba_final", USD)
     _label_out(c, ws, 25, "APR with fee (monthly unit)",

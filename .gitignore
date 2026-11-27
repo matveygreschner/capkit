@@ -9,3 +9,5 @@ dist/
 ~$*.xlsx
 skills/*/evals/results/
 .hypothesis/
+.coverage
+.coverage.*

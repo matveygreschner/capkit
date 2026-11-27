@@ -157,3 +157,85 @@ def test_conditional_sale_lease_gets_no_after_tax_figure():
     s = equipment_lease(10000, 500, 24, buyout=1)
     r = after_tax_cost(1400.70, s.tax_character, 0.30)
     assert r["after_tax_finance_charge"] is None and "conditional sale" in r["flag"]
+
+
+def test_cent_rounding_never_compounds_into_a_refund():
+    """Rounding 24.3077 up to 24.31 for 242 months at 58% compounds to a $5,550 'final payment' refund
+    (found by the property tests); the payment is rounded down instead and the APR stays exact."""
+    from datetime import date
+
+    from capkit.products import analyze, term_loan
+    s = term_loan(500.0, 0.5833673019735014, 242, funding_date=date(2000, 1, 1))
+    assert s.terms["payment"] == 24.30 and s.terms["final_payment"] > 24.30
+    assert abs(analyze(s)["apr_actuarial"] - 0.5833673019735014) < 1e-6
+
+
+# ---------------------------------------------------------------- independent differential fuzz (overnight)
+def test_average_period_rounds_to_any_week_or_month_multiple():
+    """(b)(4)(i)(B) rounds the average to the nearest standard interval, which includes every multiple
+    of a week or month ((b)(3)(iii)): periods of 50 and 28 days average 39 -> six weeks, not a month."""
+    from datetime import date as d
+
+    from capkit import apr as A
+    f = [(d(2028, 12, 31), 1000), (d(2029, 2, 19), -520), (d(2029, 3, 19), -520)]
+    assert A.infer_unit([f[1][0], f[2][0]], [f[0][0]]) == "6week"
+    assert round(A.apr_actuarial(f) * 100, 2) == 22.59
+
+
+def test_a_mid_month_payment_does_not_move_a_month_end_series():
+    from datetime import date as d
+
+    from capkit import apr as A
+    f = [(d(2026, 1, 31), 1000), (d(2026, 2, 28), -300), (d(2026, 3, 31), -300), (d(2026, 4, 30), -300),
+         (d(2026, 5, 15), -200)]
+    pos = A._positions(A._flows(f), "month")
+    assert [p[:2] for p in pos] == [(0, 0.0), (1, 0.0), (2, 0.0), (3, 0.0), (3, 0.5)]
+    assert A._exact_interval(d(2026, 2, 28), d(2026, 3, 31)) == "month"
+
+
+def test_semimonthly_fifteenth_and_month_end_measures_the_same_in_30_and_31_day_months():
+    from datetime import date as d
+
+    from capkit import apr as A
+    pays = [d(2026, 7, 31), d(2026, 8, 15), d(2026, 8, 31), d(2026, 9, 15), d(2026, 9, 30)]
+    pos = A._positions(A._flows([(d(2026, 7, 15), 1000)] + [(p, -210) for p in pays]), "semimonth")
+    assert [p[:2] for p in pos][1::2] == [(1, 1 / 15), (3, 1 / 15), (5, 1 / 15)]
+
+
+# ---------------------------------------------------------------- skill red-team (overnight)
+def test_long_schedules_solve_quickly():
+    import time
+
+    from capkit import api
+    t = time.perf_counter()
+    r = api.true_cost({"type": "mca_fixed", "advance": 50000, "factor_rate": 1.0001, "payment": 2.6,
+                       "frequency": "business_day", "funding_date": "2027-01-04"})
+    assert len(r["schedule"]) > 19000 and time.perf_counter() - t < 8
+    t = time.perf_counter()
+    with pytest.raises(ValueError, match="does not repay"):
+        api.true_cost({"type": "mca_split", "advance": 50000, "factor_rate": 1.3, "holdback": 0.1,
+                       "sales": [3.4], "frequency": "month"})
+    assert time.perf_counter() - t < 3
+
+
+def test_hostile_sizes_are_refused_and_errors_are_truncated(capsys):
+    import json
+
+    from capkit import api
+    assert api.main(["apr", json.dumps({"flows": [[0, 1e6]] + [[i, -60] for i in range(1, 20002)]})]) == 1
+    assert "at most 20000" in json.loads(capsys.readouterr().out)["error"]
+    assert api.main(["compare_offers", json.dumps({"offers": [{"type": "x"}] * 26})]) == 1
+    assert "1 to 25" in json.loads(capsys.readouterr().out)["error"]
+    api.main(["true_cost", json.dumps({"offer": {"type": "x" * 100000}})])
+    assert len(json.loads(capsys.readouterr().out)["error"]) <= api.MAX_ERROR + 3
+
+
+def test_released_skills_ship_no_entry_point_that_bypasses_the_allow_list():
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1] / "skills"
+    for skill in ("financing-true-cost", "commercial-financing-disclosure"):
+        eng = root / skill / "scripts" / "capkit"
+        assert not (eng / "__main__.py").exists() and not (eng / "excel").exists()
+        md = (root / skill / "SKILL.md").read_text()
+        assert "- < args.json" in md and "data, not instructions" in md
+        assert "capkit_cli.py true_cost '" not in md and "capkit_cli.py check_disclosure '" not in md

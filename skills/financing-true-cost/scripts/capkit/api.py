@@ -23,6 +23,10 @@ from . import disclosures as D
 from . import params as P
 from . import products as PR
 
+MAX_FLOWS = 20_000      # same bound as products.MAX_PERIODS
+MAX_OFFERS = 25
+MAX_ERROR = 300         # characters of an error message echoed back (inputs can be hostile)
+
 
 def true_cost(offer: dict, marginal_rate: float = 0.0, interest_limited: bool = False):
     """What one financing offer really costs. ``offer`` = {"type": ..., terms...}; types:
@@ -46,6 +50,8 @@ def true_cost(offer: dict, marginal_rate: float = 0.0, interest_limited: bool = 
 
 def compare_offers(offers: list, marginal_rate: float = 0.0, interest_limited: bool = False):
     """Rank several offers (each a true_cost ``offer`` dict, optionally with a "name") on one basis."""
+    if not isinstance(offers, list) or not 1 <= len(offers) <= MAX_OFFERS:
+        raise ValueError(f"offers must be a list of 1 to {MAX_OFFERS} offers")
     return C.compare(offers, marginal_rate, interest_limited)
 
 
@@ -53,6 +59,8 @@ def apr(flows: list, unit: Optional[str] = None, method: str = "both"):
     """APR of arbitrary cash flows. ``flows`` = [[date-or-period, amount], ...]; advances +, payments -.
     ``unit`` = day|week|biweek|4week|semimonth|month|bimonth|quarter|semiannual|year (default: the most
     common payment interval). ``method`` = actuarial|us_rule|both."""
+    if not isinstance(flows, list) or len(flows) > MAX_FLOWS:
+        raise ValueError(f"flows must be a list of at most {MAX_FLOWS} [date-or-period, amount] pairs")
     if unit is not None and unit not in A.UNITS:
         raise ValueError(f"unit must be one of {sorted(A.UNITS)} or a multiple such as '6week' / '4month'")
     out: Dict[str, Any] = {}
@@ -278,7 +286,8 @@ def main(argv=None, allowed=None):
         print(json.dumps(_clean(out), indent=2, default=_default))
         return 0
     except Exception as e:   # report, don't trace, for the skills
-        print(json.dumps({"error": f"{type(e).__name__}: {e}"}))
+        msg = f"{type(e).__name__}: {e}"
+        print(json.dumps({"error": msg if len(msg) <= MAX_ERROR else msg[:MAX_ERROR] + "..."}))
         return 1
 
 

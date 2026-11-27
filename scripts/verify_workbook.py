@@ -109,19 +109,23 @@ def daily_cases(ch, rnd, n):
 
 def loan_cases(ch, rnd, n):
     S = "Loans"
-    cases = [(50000, 0.15, 24, 1500, 42548.02, 0.07)] + [
+    cases = [(50000, 0.15, 24, 1500, 42548.02, 0.07),
+             (500, 0.5833673019735014, 242, 0, 42548.02, 0.07)] + [     # cent rounding rounds down here
         (rnd.uniform(1e4, 5e5), rnd.uniform(0.05, 0.3), rnd.choice([12, 24, 36, 60]), rnd.uniform(0, 5000),
          rnd.choice([rnd.uniform(25e3, 50e3), rnd.uniform(5e4, 2.5e5), rnd.uniform(2.5e5, 3.5e5),
                      rnd.uniform(3.5e5, 3e6)]), rnd.uniform(0.04, 0.09)) for _ in range(n)]
     for k, (amt, rate, months, fee, sba_amt, prime) in enumerate(cases):
         sba_months = 120 if k == 0 else rnd.choice([12, 60, 120, 300])
-        tl = analyze(term_loan(amt, rate, months, fee))
+        tls = term_loan(amt, rate, months, fee)
+        tl = analyze(tls)
         sb = sba_7a(sba_amt, prime=prime, months=sba_months)
         sa = analyze(sb)
         ch.check(f"Loans {amt:.0f}/{sba_amt:.0f}",
                  {(S, "tl_amount"): amt, (S, "tl_rate"): rate, (S, "tl_months"): months, (S, "tl_fee"): fee,
                   (S, "sba_amount"): sba_amt, (S, "prime"): prime, (S, "sba_months"): sba_months},
-                 {(S, "tl_apr"): tl["apr_actuarial"], (S, "sba_fee"): sb.terms["upfront_fee"],
+                 {(S, "tl_apr"): tl["apr_actuarial"], (S, "tl_payment"): tls.terms["payment"],
+                  (S, "tl_final"): tls.terms["final_payment"], (S, "sba_payment"): sb.terms["payment"],
+                  (S, "sba_final"): sb.terms["final_payment"], (S, "sba_fee"): sb.terms["upfront_fee"],
                   (S, "sba_ceiling"): P.sba_fee_ceiling(sba_amt), (S, "sba_apr"): sa["apr_actuarial"],
                   (S, "sba_rate"): sb.terms["annual_rate"], (S, "sba_fee_ok"): "OK"})
 
