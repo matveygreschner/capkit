@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
 - Corrections that change a reported figure (each earlier figure was wrong):
   - With `unit: "month"`, a single payment on a month end is measured in whole months: 1% for Jan 28 to
