@@ -9,8 +9,8 @@ Two Appendix J methods are implemented, because 12 CFR 1026.22(a)(1) and 10 CCR 
 * :func:`apr_us_rule` - the United States Rule: each payment pays accrued interest first, then
   principal, and interest is never charged on unpaid interest.
 
-The two give the same rate whenever every payment covers the interest accrued since the previous
-flow, and differ when one does not (deferred payments, zero-payment periods).
+The two can give different rates: with zero-payment periods, deferred payments, or fractional
+periods. On whole-period schedules where every payment covers accrued interest they agree.
 
 Cash flows are ``Flow(when, amount)`` with ``amount > 0`` money to the borrower (advances, net of any
 prepaid finance charge) and ``amount < 0`` money from the borrower (payments). ``when`` is either a

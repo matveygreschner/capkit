@@ -23,7 +23,6 @@ import formulas  # noqa: E402
 from capkit import disclosures as D  # noqa: E402
 from capkit import params as P  # noqa: E402
 from capkit.products import analyze, early_pay_cost, factoring, mca_fixed, sba_7a, term_loan  # noqa: E402
-from capkit.verify.reprice import evaluate  # noqa: E402
 
 EXCEL_EPOCH = date(1899, 12, 30)
 
@@ -162,31 +161,6 @@ def disclosure_cases(ch, rnd, n):
                   (S, "term_days"): est["estimated_term_days"], (S, "apr"): est["estimated_apr_actuarial"]})
 
 
-def mix_cases(ch, rnd, n, scenario):
-    S = "Mix_Evaluator"
-    cells = ch.book.cells[S]
-    T = scenario["horizon_weeks"]
-    for k in range(n):
-        xm = rnd.choice([0, rnd.uniform(10000, 50000)])
-        sm = rnd.randint(1, T)
-        um = rnd.choice([0] + list(range(sm + 1, T + 1))) if sm < T else 0
-        xs = rnd.choice([0, rnd.uniform(25000, 50000), rnd.uniform(50001, 150000)])
-        ss = rnd.randint(7, T)
-        b = [round(rnd.uniform(0, 40000), 2) for _ in range(T)]
-        e = [round(rnd.random(), 4) for _ in range(T - 1)] + [0]
-        H = rnd.choice([0, 52])
-        plan = {"fundings": ([{"offer": "MCA", "week": sm, "amount": xm, "prepay_week": um or None}] if xm else [])
-                + ([{"offer": "SBA 7(a)", "week": ss, "amount": xs}] if xs else []),
-                "loc_balance": b, "early_pay": {i: e[i] for i in range(T - 1) if e[i]}}
-        r = evaluate(scenario, plan, H=H)
-        ins = {(S, "x_mca"): xm, (S, "s_mca"): sm, (S, "u_mca"): um, (S, "x_sba"): xs, (S, "s_sba"): ss, (S, "H"): H}
-        ins.update({(S, f"b{t}"): b[t - 1] for t in range(1, T + 1)})
-        ins.update({(S, f"e{t}"): e[t - 1] for t in range(1, T + 1)})
-        exp = {(S, "terminal"): r["terminal_net_position"], (S, "feasible"): "FEASIBLE" if r["feasible"] else "NOT FEASIBLE"}
-        exp.update({(S, f"cash{t}"): r["weeks"][t - 1]["cash"] for t in (1, 7, T)})
-        ch.check(f"Mix {k} H={H}", ins, exp, tol=0.011)
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("path", nargs="?", default=str(ROOT / "workbook" / "CapKit.xlsx"))
@@ -196,14 +170,9 @@ def main():
     book = Book(Path(a.path))
     ch = Checker(book)
     rnd = random.Random(a.seed)
-    scenario = json.loads((ROOT / "examples" / "bakery.json").read_text())
-    S = "Mix_Evaluator"
-    eng = book.run({}, [(S, "engine_terminal")])[(S, "engine_terminal")]
-    ch.check("Mix optimal plan", {}, {(S, "terminal"): eng, (S, "feasible"): "FEASIBLE"})
     t = time.time()
     for fn in (apr_cases, daily_cases, loan_cases, earlypay_cases, disclosure_cases):
         fn(ch, rnd, a.fuzz)
-    mix_cases(ch, rnd, a.fuzz * 3, scenario)
     print(f"{ch.n} comparisons in {time.time() - t:.1f}s, {len(ch.fail)} mismatches")
     for f in ch.fail[:40]:
         print("  MISMATCH", f)

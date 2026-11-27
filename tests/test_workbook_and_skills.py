@@ -11,7 +11,7 @@ from openpyxl import load_workbook
 ROOT = Path(__file__).resolve().parents[1]
 BANNED = ("XLOOKUP", "XMATCH", "LET(", "LAMBDA(", "FILTER(", "SORT(", "UNIQUE(", "SEQUENCE(", "_xlfn", "[@",
           "INDIRECT(", "OFFSET(", "MATCH(TRUE")
-SKILL_NAMES = ("financing-true-cost", "funding-mix-optimizer", "commercial-financing-disclosure")
+SKILL_NAMES = ("financing-true-cost", "commercial-financing-disclosure")
 
 
 @pytest.fixture(scope="module")
@@ -39,13 +39,11 @@ def test_workbook_formulas_are_portable(book):
 def test_workbook_sheets_and_named_cells(book):
     wb = load_workbook(book)
     assert wb.sheetnames == ["Start", "APR", "Daily_MCA", "Loans", "EarlyPay_Factoring", "Disclosure",
-                             "Mix_Evaluator", "Params_Sources", "Holidays"]
+                             "Params_Sources", "Holidays"]
     cells = json.loads(book.with_suffix(".cells.json").read_text())
     for sheet, names in cells.items():
         for name, addr in names.items():
             assert wb[sheet][addr].value is not None or name in ("sba_spread_in", "sba_fee_in"), (sheet, name)
-    mix = wb["Mix_Evaluator"]
-    assert mix[cells["Mix_Evaluator"]["engine_terminal"]].value == pytest.approx(-87156.81)
 
 
 def test_skills_valid_and_in_sync():
@@ -90,23 +88,16 @@ def test_disclosure_from_archive(unpacked, tmp_path):
     assert out["result"]["check"]["verdict"] == "inconsistent with both permitted methods"
 
 
-def test_optimizer_from_archive(unpacked, tmp_path):
-    pytest.importorskip("scipy")
-    sk = unpacked / "funding-mix-optimizer"
-    code, out = _run(sk, "optimize_mix", "-", cwd=tmp_path, stdin=(sk / "assets/bakery.json").read_text(),
-                     isolated=False)
-    assert code == 0
-    res = out["result"]["results"]
-    assert round(res["H=0"]["optimal"]["objective"], 2) == -87156.81
-    assert round(res["H=0"]["saving_vs_baseline"], 2) == 8955.94
+def test_optimizer_skill_is_not_released():
+    """The funding-mix optimizer is frozen (experimental): it must not ship as a release asset."""
+    assert not (ROOT / "dist" / "funding-mix-optimizer.zip").exists()
 
 
-def test_evaluate_without_solver_from_archive(unpacked, tmp_path):
-    sk = unpacked / "funding-mix-optimizer"
-    sc = json.loads((sk / "assets/bakery.json").read_text())
-    code, out = _run(sk, "evaluate_mix", json.dumps({"scenario": sc, "plan": {
-        "fundings": [{"offer": "MCA", "week": 2, "amount": 50000}], "loc_balance": [0] * 13}}), cwd=tmp_path)
-    assert code == 0 and out["result"]["feasible"] is False
+def test_released_skills_cannot_run_frozen_commands(unpacked, tmp_path):
+    sc = json.loads((ROOT / "examples/bakery.json").read_text())
+    code, out = _run(unpacked / "financing-true-cost", "optimize_mix", json.dumps({"scenario": sc}), cwd=tmp_path)
+    assert code == 1 and "not available in this skill" in out["error"]
+    assert not (unpacked / "financing-true-cost/scripts/capkit/optimize").exists()
 
 
 def test_archive_layout(unpacked):

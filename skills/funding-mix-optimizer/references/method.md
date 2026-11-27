@@ -36,8 +36,10 @@ the smaller interval wins. A single advance repaid by a single payment uses the 
 **United States Rule.** Each payment pays accrued interest first, then principal. Unpaid interest is
 carried but never charged interest. 12 CFR 1026.22 and both state disclosure laws allow either
 method.
-- The two agree whenever every payment covers the interest accrued since the previous flow.
-- They differ otherwise. Example: a $10,000 advance with two zero-payment months, then 10 × $1,150,
+- On a whole-period schedule where every payment covers the interest accrued since the previous
+  flow, the two give the same rate (tested on random monthly schedules).
+- They can differ otherwise, including with fractional periods even when payments cover interest:
+  `[(0, 100), (0.5, -20), (1, -89.25)]` gives 122.67% actuarial vs 120.00% U.S. Rule. Another example: a $10,000 advance with two zero-payment months, then 10 × $1,150,
   gives **22.8099%** actuarial vs **22.9843%** U.S. Rule.
 
 **Tolerance.** 1/8 percentage point, or 1/4 for irregular transactions (12 CFR 1026.22(a)(2)–(3)).

@@ -15,7 +15,10 @@ from capkit.optimize.solve import solve
 from capkit.verify.reprice import evaluate
 
 ROOT = Path(__file__).resolve().parents[1]
-BAKERY = json.loads((ROOT / "examples" / "bakery.json").read_text())
+# The reference fixture lets the MCA be prepaid out of SBA proceeds, which SBA SOP 50 10 8/8.1 restricts.
+# It is NOT an executable plan; it is kept because an independent reference script pins its optimum.
+BAKERY = json.loads((ROOT / "tests" / "fixtures" / "bakery_reference.json").read_text())
+SAFE = json.loads((ROOT / "examples" / "bakery.json").read_text())
 
 
 def variant(**changes):
@@ -63,6 +66,16 @@ def test_savings_vs_baseline():
     out = run(BAKERY, sensitivity=False)
     assert round(out["results"]["H=0"]["saving_vs_baseline"], 2) == 8955.94
     assert round(out["results"]["H=52"]["saving_vs_baseline"], 2) == 10368.86
+
+
+def test_public_example_never_refinances_the_mca():
+    """The shipped example forbids MCA prepayment, so no plan pays the advance off with SBA money."""
+    r = optimize(SAFE)
+    assert r["optimal"] and round(r["objective"], 2) == -88121.82
+    assert all(f["prepay_week"] is None for f in r["plan"]["fundings"])
+    assert r["check"]["feasible"]
+    base = optimize(SAFE, force={"MCA": 50000})
+    assert not base["optimal"]          # the full $50,000 MCA cannot keep cash above the floor
 
 
 def test_fee_on_face_is_rejected_by_the_statutory_ceiling():

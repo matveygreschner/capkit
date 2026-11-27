@@ -1,7 +1,8 @@
 # Scenario format (funding-mix optimizer)
 
-A scenario is one JSON object. See `examples/bakery.json`, which the optimizer skill ships as
-`assets/bakery.json`.
+A scenario is one JSON object. See `examples/bakery.json`, which the experimental optimizer skill
+ships as `assets/bakery.json`. In that example the merchant cash advance is not prepayable, because
+SBA 7(a) proceeds generally cannot refinance it.
 
 | Field | Meaning |
 |---|---|
