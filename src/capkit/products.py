@@ -218,13 +218,16 @@ def term_loan(amount: float, annual_rate: float, months: int, fee: float = 0.0,
         for _ in range(months - 1):
             bal = bal * (1 + r) - pmt
         return round(bal * (1 + r), 2)                       # the last payment clears the rounding residual
-    pmt = round(level, 2)                                    # billed in cents
+    pmt = math.floor(level * 100 + 0.5) / 100               # billed in cents, half up (as Excel ROUND)
     final = last(pmt)
     if final < 0:
         # Rounding up overpays; at high rates over long terms the excess compounds into a refund, which
-        # no lender bills. Round down instead: the final payment is then slightly larger than the rest.
-        pmt = math.floor(level * 100 + 1e-9) / 100
+        # no lender bills. Round down instead, so the final payment is slightly larger than the rest.
+        pmt = math.floor(level * 100) / 100
         final = last(pmt)
+        while final < 0 and pmt > 0:                         # guard against float noise at a cent
+            pmt = round(pmt - 0.01, 2)
+            final = last(pmt)
     pays = [pmt] * (months - 1) + [final]
     flows = [A.Flow(fd, amount - fee)] + [A.Flow(add_months(fd, k), -pays[k - 1]) for k in range(1, months + 1)]
     return Schedule("term_loan", flows, "month", amount, amount - fee, INTEREST,

@@ -55,7 +55,7 @@ def _cent_payment(rate: str, n: str, pv: str) -> str:
     """The level payment billed in cents, as products.term_loan bills it: rounded to the nearest cent,
     or down when rounding up would overpay into a refund on the final payment."""
     up = f"ROUND(PMT({rate},{n},-{pv}),2)"
-    return f"=IF(FV({rate},{n}-1,{up},-{pv})*(1+{rate})<-0.005,ROUNDDOWN(PMT({rate},{n},-{pv})+1E-9,2),{up})"
+    return f"=IF(FV({rate},{n}-1,{up},-{pv})*(1+{rate})<-0.005,ROUNDDOWN(PMT({rate},{n},-{pv}),2),{up})"
 
 
 def _label_input(c, ws, row, label, value, name, fmt=None, note=None):

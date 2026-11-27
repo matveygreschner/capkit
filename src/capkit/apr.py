@@ -103,14 +103,14 @@ def _is_month_end(d: date) -> bool:
     return (d + timedelta(1)).month != d.month
 
 
-def _exact_interval(a: date, b: date):
+def _exact_interval(a: date, b: date, anchor: int | None = None):
     """The standard interval the gap a -> b is EXACTLY: a multiple of a month (checked first, so Feb 1 ->
     Mar 1 is a month, not four weeks; month-end clamping honoured), a semimonth, or a multiple of a week,
     up to a year. Otherwise the raw day count, so irregular gaps never merge into a common period."""
     for k in range(12, 0, -1):
         f = add_months(a, k)
         if f == b or (_is_month_end(b) and f.month == b.month and f.year == b.year
-                      and (a.day >= b.day or _is_month_end(a))):
+                      and (a.day >= b.day or (_is_month_end(a) and anchor == 31))):
             return _MONTH_NAMES.get(k, f"{k}month")
     days = (b - a).days
     if 13 <= days <= 17:
@@ -128,9 +128,11 @@ def _exact_interval(a: date, b: date):
 
 # Every standard interval of (b)(3)(iii) - a day, a semimonth, any multiple of a week or of a month up
 # to a year - with its approximate length, for rounding an average period ((b)(4)(i)(B)).
-_STANDARD = {"day": 1, "semimonth": 15.2,
-             **{_WEEK_NAMES.get(k, f"{k}week"): 7 * k for k in range(1, 53)},
-             **{_MONTH_NAMES.get(k, f"{k}month"): _APPROX.get(_MONTH_NAMES.get(k, ""), 30.4 * k) for k in range(1, 13)}}
+# Lengths in tenths of a day (integers, so ties compare exactly).
+_STANDARD = {"day": 10, "semimonth": 152,
+             **{_WEEK_NAMES.get(k, f"{k}week"): 70 * k for k in range(1, 53)},
+             **{_MONTH_NAMES.get(k, f"{k}month"): round(10 * _APPROX.get(_MONTH_NAMES.get(k, ""), 30.4 * k))
+                for k in range(1, 13)}}
 
 
 def _approx_days(name) -> float:
@@ -150,7 +152,8 @@ def infer_unit(dates: Sequence[date], advances: Sequence[date] = ()) -> str:
         gaps.append((advs[0], pays[0]))
     if not gaps:
         return "month"
-    kinds = [_exact_interval(a, b) for a, b in gaps]
+    anchor = series_day(pays) if pays else None
+    kinds = [_exact_interval(a, b, anchor) for a, b in gaps]
     counts = Counter(kinds)
     days = lambda k: _approx_days(k) if isinstance(k, str) else k
     top = max(counts.values())
@@ -163,8 +166,9 @@ def infer_unit(dates: Sequence[date], advances: Sequence[date] = ()) -> str:
             return "day"
     if counts.get(1, 0) >= 2 and counts[1] == top:
         return "day"
-    avg = sum((b - a).days for a, b in gaps) / len(gaps)
-    return min(_STANDARD, key=lambda n: (abs(_STANDARD[n] - avg), _STANDARD[n]))
+    total, count = sum((b - a).days for a, b in gaps), len(gaps)
+    # |L/10 - total/count| compared exactly as |L*count - 10*total|, so a true tie goes to the shorter
+    return min(_STANDARD, key=lambda n: (abs(_STANDARD[n] * count - 10 * total), _STANDARD[n]))
 
 
 def _back(d: date, months: int, anchor: int | None = None) -> date:
@@ -189,15 +193,20 @@ def _months_back(base: date, d: date, step: int = 1, anchor: int | None = None):
 
 
 def series_day(dates: Sequence[date]) -> int:
-    """Nominal day of the month for payments that fall on a month's last day: the most common late day
-    (28th-30th) among payments that are not on a month's last day, as in a 30th-of-month series whose
-    February payment is the 28th; otherwise 31, a month-end series (Appendix J (b)(3)(iv)). Payments on
-    other days (a mid-month payment in a month-end schedule) do not move it."""
-    regular = [d.day for d in dates if not _is_month_end(d) and d.day >= 28]
-    if not regular:
+    """Nominal day of the month for payments that fall on a month's last day (Appendix J (b)(3)(iv)):
+    * the most common late day (28th-30th) among the other payments - a 30th-of-month series whose
+      February payment is the 28th;
+    * else 31 (a month-end series) when month-end payments are at least as common as any other day,
+      so a single mid-month payment does not move a month-end schedule;
+    * else the most common day, and an isolated month-end date is measured to the same date."""
+    regular = Counter(d.day for d in dates if not _is_month_end(d))
+    late = Counter({k: c for k, c in regular.items() if k >= 28})
+    if late:
+        return max(late, key=lambda k: (late[k], -k))
+    ends = sum(1 for d in dates if _is_month_end(d))
+    if not regular or ends >= max(regular.values()):
         return 31
-    c = Counter(regular)
-    return max(c, key=lambda k: (c[k], -k))
+    return max(regular, key=lambda k: (regular[k], -k))
 
 
 def period_position(base: date, d: date, unit: str, anchor: int | None = None) -> Tuple[int, float]:
@@ -362,22 +371,37 @@ def _conventional(keys_amounts) -> bool:
 
 
 def _monotone_root(fn, neg_floor: float, hi: float) -> Optional[float]:
-    """The single root of an increasing ``fn`` in (neg_floor, hi], or None."""
+    """The single root of an increasing ``fn`` in [neg_floor, hi], or None. Endpoints that solve exactly
+    count; a lower end too far out to evaluate (overflow over a long schedule) is moved toward zero."""
     f0 = fn(0.0)
     if f0 == 0:
         return 0.0
     if f0 > 0:
-        return _bisect(fn, neg_floor, 0.0) if fn(neg_floor) < 0 else None
-    x = 1e-3
+        lo = neg_floor
+        while True:
+            try:
+                flo = fn(lo)
+                break
+            except (OverflowError, ZeroDivisionError):
+                lo /= 2
+                if lo > -1e-12:
+                    return None
+        if flo == 0:
+            return lo
+        return _bisect(fn, lo, 0.0) if flo < 0 else None
+    x, prev = 1e-3, 0.0
     while True:
         try:
-            if fn(x) > 0:
-                return _bisect(fn, x / 4 if x > 1e-3 else 0.0, x)
+            fx = fn(x)
         except (OverflowError, ZeroDivisionError):
             return None
+        if fx == 0:
+            return x
+        if fx > 0:
+            return _bisect(fn, prev, x)
         if x >= hi:
             return None
-        x = min(x * 4, hi)
+        prev, x = x, min(x * 4, hi)
 
 
 def _rate(fn, neg_floor: float, hi: float = 1e4, monotone: bool = False) -> float:
@@ -520,7 +544,7 @@ def irregular_features(flows) -> List[str]:
         kinds: set
         if all(isinstance(f.when, date) for f in pay):
             ds = [cast(date, f.when) for f in pay]
-            kinds = {_exact_interval(a, b) for a, b in zip(ds, ds[1:])}
+            kinds = {_exact_interval(a, b, series_day(ds)) for a, b in zip(ds, ds[1:])}
         else:
             ts = [cast(float, f.when) for f in pay]
             kinds = {round(b - a, 9) for a, b in zip(ts, ts[1:])}
