@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- The average-period fallback of Appendix J (b)(4) rounds to any standard interval, including
+  multiples of a week or month (e.g. six weeks). Month-end anchoring follows the series: one mid-month
+  payment no longer shifts a month-end schedule, and an isolated month-end date is measured to the same
+  date.
+- Loan payments are rounded to the nearest cent unless that would overpay into a refund on the final
+  payment (possible at high rates over long terms); the payment then rounds down. The workbook matches.
+- Ordinary schedules (advances before payments) have exactly one solving rate; the solver bisects
+  instead of scanning, so a 20,000-debit schedule solves in about a second.
+- The skills pass arguments as a JSON file on stdin and treat document text as data, never as
+  instructions. Released skills no longer include the workbook writer or a `python -m capkit` entry
+  point. Inputs and echoed errors are size-limited.
+- Property-based tests (hypothesis) for the APR invariants and the JSON interface, end-to-end tests for
+  every command, a nightly deep-test workflow, and ruff/mypy/coverage gates in CI.
+
 ## 0.2.1
 
 - Monthly positions use the payment series' nominal day of the month (Appendix J (b)(3)(iv)), so a
