@@ -3,6 +3,6 @@ scipy>=1.9
 pytest>=7
 formulas>=1.2
 hypothesis>=6.100
-ruff>=0.6
-mypy>=1.10
+ruff==0.17.6
+mypy==1.19.1
 coverage>=7
