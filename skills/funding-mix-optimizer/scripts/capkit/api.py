@@ -23,7 +23,7 @@ from . import disclosures as D
 from . import params as P
 from . import products as PR
 
-MAX_FLOWS = 20_000      # same bound as products.MAX_PERIODS
+MAX_FLOWS = 25_000      # room for products.MAX_PERIODS payments plus advances
 MAX_OFFERS = 25
 MAX_ERROR = 300         # characters of an error message echoed back (inputs can be hostile)
 
@@ -287,7 +287,7 @@ def main(argv=None, allowed=None):
         return 0
     except Exception as e:   # report, don't trace, for the skills
         msg = f"{type(e).__name__}: {e}"
-        print(json.dumps({"error": msg if len(msg) <= MAX_ERROR else msg[:MAX_ERROR] + "..."}))
+        print(json.dumps({"error": msg if len(msg) <= MAX_ERROR else msg[:MAX_ERROR - 3] + "..."}))
         return 1
 
 

@@ -190,7 +190,8 @@ def test_a_mid_month_payment_does_not_move_a_month_end_series():
          (d(2026, 5, 15), -200)]
     pos = A._positions(A._flows(f), "month")
     assert [p[:2] for p in pos] == [(0, 0.0), (1, 0.0), (2, 0.0), (3, 0.0), (3, 0.5)]
-    assert A._exact_interval(d(2026, 2, 28), d(2026, 3, 31)) == "month"
+    assert A._exact_interval(d(2026, 2, 28), d(2026, 3, 31), anchor=31) == "month"      # month-end series
+    assert A._exact_interval(d(2026, 2, 28), d(2026, 3, 31), anchor=30) == 31           # 30th series: not a month
 
 
 def test_semimonthly_fifteenth_and_month_end_measures_the_same_in_30_and_31_day_months():
@@ -222,12 +223,12 @@ def test_hostile_sizes_are_refused_and_errors_are_truncated(capsys):
     import json
 
     from capkit import api
-    assert api.main(["apr", json.dumps({"flows": [[0, 1e6]] + [[i, -60] for i in range(1, 20002)]})]) == 1
-    assert "at most 20000" in json.loads(capsys.readouterr().out)["error"]
+    assert api.main(["apr", json.dumps({"flows": [[0, 1e6]] + [[i, -60] for i in range(1, 25002)]})]) == 1
+    assert "at most 25000" in json.loads(capsys.readouterr().out)["error"]
     assert api.main(["compare_offers", json.dumps({"offers": [{"type": "x"}] * 26})]) == 1
     assert "1 to 25" in json.loads(capsys.readouterr().out)["error"]
     api.main(["true_cost", json.dumps({"offer": {"type": "x" * 100000}})])
-    assert len(json.loads(capsys.readouterr().out)["error"]) <= api.MAX_ERROR + 3
+    assert len(json.loads(capsys.readouterr().out)["error"]) <= api.MAX_ERROR
 
 
 def test_released_skills_ship_no_entry_point_that_bypasses_the_allow_list():
@@ -239,3 +240,48 @@ def test_released_skills_ship_no_entry_point_that_bypasses_the_allow_list():
         md = (root / skill / "SKILL.md").read_text()
         assert "- < args.json" in md and "data, not instructions" in md
         assert "capkit_cli.py true_cost '" not in md and "capkit_cli.py check_disclosure '" not in md
+
+
+# ---------------------------------------------------------------- Codex audit of the overnight branch
+def test_fast_path_endpoints_and_long_negative_rate_schedules():
+    from capkit import apr as A
+    assert A.periodic_rate_actuarial([(0, 100), (2000, -99)]) == pytest.approx(-5.0251553e-06, rel=1e-6)
+    assert A.periodic_rate_actuarial([(0, 100), (1, -50)]) == pytest.approx(-0.5)        # root on the floor
+    assert A.periodic_rate_us_rule([(0, 1), (1, -10001)]) == pytest.approx(1e4)          # root on the ceiling
+    assert A.periodic_rate_actuarial([(100, 100), (101, -99)]) == pytest.approx(-0.01)   # no underflow
+
+
+def test_an_isolated_february_month_end_is_measured_to_the_same_date():
+    from capkit.apr import apr_actuarial
+    f = [("2027-01-29", 100), ("2027-02-15", -40), ("2027-02-28", -40), ("2027-03-15", -40)]
+    assert round(apr_actuarial(f, "month") * 100, 4) == 228.9794
+
+
+def test_a_thirtieth_of_month_series_with_a_31st_payment_is_irregular():
+    from capkit.apr import irregular_features
+    f = [("2027-01-30", 100), ("2027-02-28", -30), ("2027-03-31", -30), ("2027-04-30", -30), ("2027-05-30", -30)]
+    assert irregular_features(f) == ["irregular payment periods"]
+
+
+def test_average_tie_goes_to_the_shorter_interval():
+    from datetime import date, timedelta
+
+    from capkit.apr import infer_unit
+    ds = [date(2027, 1, 1)]
+    for g in [22, 23, 24, 25, 26, 37, 38, 41, 44, 47]:
+        ds.append(ds[-1] + timedelta(g))
+    assert infer_unit(ds) == "month"
+
+
+@pytest.mark.parametrize("amount,annual,n", [((25 - 5e-12) * (1 - 1.1 ** -300) / 0.1, 1.2, 300),
+                                             ((25 - 5e-10) * (1 - 1.1 ** -300) / 0.1, 1.2, 300),
+                                             (2.25, 0.0, 2)])
+def test_cent_payment_edges_agree_with_the_workbook_formula(amount, annual, n):
+    import formulas
+
+    from capkit.excel.builder import _cent_payment
+    from capkit.products import term_loan
+    s = term_loan(amount, annual, n)
+    assert s.terms["final_payment"] >= 0 and all(f.amount < 0 for f in s.flows[1:])
+    xl = formulas.Parser().ast(_cent_payment(repr(annual / 12), str(n), repr(amount)))[1].compile()()
+    assert float(xl) == pytest.approx(s.terms["payment"], abs=1e-9)

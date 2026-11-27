@@ -129,6 +129,8 @@ def vendor(skill: str, check: bool, stale: list):
             return bool(c.left_only or c.right_only or c.diff_files) or any(diff(s) for s in c.subdirs.values())
         if cmp is None or diff(cmp):
             stale.append(str(dest.relative_to(ROOT)))
+        stale.extend(f"{(dest / name).relative_to(ROOT)} must not ship in a released skill"
+                     for name in skip if (dest / name).exists())
         return
     if dest.exists():
         shutil.rmtree(dest)
