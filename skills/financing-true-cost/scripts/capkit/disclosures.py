@@ -135,7 +135,7 @@ def estimate(funding_provided: float, total_owed: float, split_rate: float, avg_
     total_pay = sum(pays)
     apr_a = A.apr_actuarial(flows, unit)
     apr_u = A.apr_us_rule(flows, unit)
-    irregular = len({round(x, 6) for x in pays[:-1]}) > 1      # payment amounts change (not just the last)
+    irregular_why = A.irregular_features(flows)
     out = {
         "state": state,
         "covered": amount_financed <= limit,
@@ -147,7 +147,10 @@ def estimate(funding_provided: float, total_owed: float, split_rate: float, avg_
         "amount_financed": round(amount_financed, 2),
         "estimated_apr_actuarial": apr_a,
         "estimated_apr_us_rule": apr_u,
-        "irregular": irregular,
+        "irregular": bool(irregular_why),
+        "irregular_features": irregular_why,
+        "holiday_calendar": "Federal Reserve" if holidays == "frb" else ("none" if not holidays else "custom"),
+        "_schedule": [(f.when, f.amount) for f in flows],
         "finance_charge": round(total_pay - amount_financed, 2),
         "estimated_total_payment_amount": round(total_pay, 2),
         "estimated_payment": round(sum(pays) / len(pays), 2),

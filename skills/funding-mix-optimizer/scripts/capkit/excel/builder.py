@@ -30,6 +30,7 @@ USD = "$#,##0.00"
 
 DAILY_ROWS = 1100          # calendar days in the daily grids (covers ~3 years)
 PERIOD_ROWS = 400          # unit periods in the fixed-period grid
+LOAN_ROWS = 360            # months in the loan payment grids
 
 
 class Cells:
@@ -182,9 +183,12 @@ def sheet_loans(wb, c):
     _label_input(c, ws, 4, "Note rate (annual)", 0.15, "tl_rate", PCT)
     _label_input(c, ws, 5, "Term (months)", 24, "tl_months")
     _label_input(c, ws, 6, "Fee withheld", 1500, "tl_fee", USD)
-    _label_out(c, ws, 7, "Monthly payment", "=PMT(B4/12,B5,-B3)", "tl_payment", USD)
-    _label_out(c, ws, 8, "APR (Appendix J, monthly unit)", "=RATE(B5,-B7,B3-B6)*12", "tl_apr", PCT)
-    _label_out(c, ws, 9, "Finance charge", "=B7*B5-(B3-B6)", "tl_fc", USD)
+    _label_out(c, ws, 7, "Monthly payment (billed in cents)", "=ROUND(PMT(B4/12,B5,-B3),2)", "tl_payment", USD)
+    _label_out(c, ws, 10, "Final payment (absorbs rounding)", "=ROUND(FV(B4/12,B5-1,B7,-B3)*(1+B4/12),2)",
+               "tl_final", USD)
+    _label_out(c, ws, 8, "APR (Appendix J, monthly unit)",
+               f'=IF(B5<={LOAN_ROWS},IRR(O3:O{3 + LOAN_ROWS},0.01)*12,"n/a: term longer than the grid")', "tl_apr", PCT)
+    _label_out(c, ws, 9, "Finance charge", "=B7*(B5-1)+B10-(B3-B6)", "tl_fc", USD)
 
     ws["A11"] = "SBA 7(a) (variable rate held at today's Prime)"
     ws["A11"].font = HEAD
@@ -207,8 +211,20 @@ def sheet_loans(wb, c):
                "=B19*B12*INDEX($L$4:$L$6,MATCH(B12,$K$4:$K$6,1))+MAX(0,B19*B12-1000000)*0.0025",
                "sba_ceiling", USD)
     _label_out(c, ws, 23, "Fee within ceiling?", '=IF(B21<=B22+0.000001,"OK","ABOVE STATUTORY CEILING")', "sba_fee_ok")
-    _label_out(c, ws, 24, "Monthly payment", "=PMT(B18/12,B15,-B12)", "sba_payment", USD)
-    _label_out(c, ws, 25, "APR with fee (monthly unit)", "=RATE(B15,-B24,B12-B21)*12", "sba_apr", PCT)
+    _label_out(c, ws, 24, "Monthly payment (billed in cents)", "=ROUND(PMT(B18/12,B15,-B12),2)", "sba_payment", USD)
+    _label_out(c, ws, 26, "Final payment (absorbs rounding)", "=ROUND(FV(B18/12,B15-1,B24,-B12)*(1+B18/12),2)",
+               "sba_final", USD)
+    _label_out(c, ws, 25, "APR with fee (monthly unit)",
+               f'=IF(B15<={LOAN_ROWS},IRR(Q3:Q{3 + LOAN_ROWS},0.01)*12,"n/a: term longer than the grid")', "sba_apr", PCT)
+    ws["N2"], ws["O2"], ws["Q2"] = "Month", "Term loan flow", "SBA flow"
+    for k in range(LOAN_ROWS + 1):
+        r = 3 + k
+        ws[f"N{r}"] = k
+        if k == 0:
+            ws[f"O{r}"], ws[f"Q{r}"] = "=B3-B6", "=B12-B21"
+        else:
+            ws[f"O{r}"] = f"=IF(N{r}<$B$5,-$B$7,IF(N{r}=$B$5,-$B$10,0))"
+            ws[f"Q{r}"] = f"=IF(N{r}<$B$15,-$B$24,IF(N{r}=$B$15,-$B$26,0))"
 
     ws["E3"], ws["F3"] = "Loan from ($)", "Max spread"
     ws["H3"], ws["I3"] = "Loan from ($)", "FY fee rate"

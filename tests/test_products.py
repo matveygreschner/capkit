@@ -35,7 +35,7 @@ def test_term_loan():
     s = term_loan(50000, 0.15, 24, fee=1500)
     assert s.terms["payment"] == 2424.33
     assert r2(analyze(s)["apr_actuarial"]) == 18.13
-    assert abs(analyze(term_loan(50000, 0.15, 24))["apr_actuarial"] - 0.15) < 1e-9
+    assert abs(analyze(term_loan(50000, 0.15, 24))["apr_actuarial"] - 0.15) < 1e-5   # cent-rounded payments
 
 
 def test_early_pay():

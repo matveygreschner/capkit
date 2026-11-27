@@ -207,11 +207,18 @@ def term_loan(amount: float, annual_rate: float, months: int, fee: float = 0.0,
     if fee >= amount:
         raise ValueError("fee must be less than the amount")
     fd = parse(funding_date)
-    pmt = level_payment(amount, annual_rate / 12, months)
-    flows = [A.Flow(fd, amount - fee)] + [A.Flow(add_months(fd, k), -pmt) for k in range(1, months + 1)]
+    r = annual_rate / 12
+    pmt = round(level_payment(amount, r, months), 2)          # billed in cents
+    bal = amount
+    for _ in range(months - 1):
+        bal = bal * (1 + r) - pmt
+    final = round(bal * (1 + r), 2)                          # the last payment clears the rounding residual
+    pays = [pmt] * (months - 1) + [final]
+    flows = [A.Flow(fd, amount - fee)] + [A.Flow(add_months(fd, k), -pays[k - 1]) for k in range(1, months + 1)]
     return Schedule("term_loan", flows, "month", amount, amount - fee, INTEREST,
-                    {"annual_rate": annual_rate, "months": months, "payment": round(pmt, 2), "fee": fee,
-                     "prepay_penalty": prepay_penalty})
+                    {"annual_rate": annual_rate, "months": months, "payment": pmt, "final_payment": final,
+                     "fee": fee, "prepay_penalty": prepay_penalty},
+                    ["Payments are rounded to cents; the final payment absorbs the rounding difference."])
 
 
 def sba_7a(amount: float, prime: Optional[float] = None, spread: Optional[float] = None, months: int = 120,
