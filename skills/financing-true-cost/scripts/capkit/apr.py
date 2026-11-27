@@ -88,7 +88,13 @@ def _flows(flows) -> List[Flow]:
             out.append(f)
         else:
             w, a = f
+            if isinstance(w, bool) or isinstance(a, bool):
+                raise ValueError("a flow is [date-or-period, amount]; true/false is neither")
             out.append(Flow(w if isinstance(w, (int, float)) else parse(w), float(a)))
+    if not out:
+        raise ValueError("flows is empty: give at least one advance and one payment")
+    if len({isinstance(f.when, (int, float)) for f in out}) > 1:
+        raise ValueError("flows mix dates and numeric period positions; use one or the other")
     return out
 
 
@@ -103,15 +109,21 @@ def _is_month_end(d: date) -> bool:
     return (d + timedelta(1)).month != d.month
 
 
+def _nominal_day(d: date, anchor: int | None) -> int:
+    """A short month's last day stands for the series' nominal day (Appendix J (b)(3)(iv))."""
+    return anchor if anchor and _is_month_end(d) and d.day < anchor else d.day
+
+
 def _exact_interval(a: date, b: date, anchor: int | None = None):
     """The standard interval the gap a -> b is EXACTLY: a multiple of a month (checked first, so Feb 1 ->
-    Mar 1 is a month, not four weeks; month-end clamping honoured), a semimonth, or a multiple of a week,
-    up to a year. Otherwise the raw day count, so irregular gaps never merge into a common period."""
-    for k in range(12, 0, -1):
-        f = add_months(a, k)
-        if f == b or (_is_month_end(b) and f.month == b.month and f.year == b.year
-                      and (a.day >= b.day or (_is_month_end(a) and anchor == 31))):
-            return _MONTH_NAMES.get(k, f"{k}month")
+    Mar 1 is a month, not four weeks; month-end clamping honoured, and with ``anchor`` - the series'
+    nominal day of the month - Feb 28 -> Mar 29/30/31 in a series on the 29th/30th/31st is one month), a
+    semimonth, or a multiple of a week, up to a year. Otherwise the raw day count, so irregular gaps
+    never merge."""
+    m = (b.year - a.year) * 12 + b.month - a.month
+    if 1 <= m <= 12 and (add_months(a, m) == b or (_is_month_end(b) and a.day >= b.day)
+                         or (anchor is not None and _nominal_day(a, anchor) == _nominal_day(b, anchor))):
+        return _MONTH_NAMES.get(m, f"{m}month")
     days = (b - a).days
     if 13 <= days <= 17:
         same = (a.year, a.month) == (b.year, b.month)
@@ -152,8 +164,12 @@ def infer_unit(dates: Sequence[date], advances: Sequence[date] = ()) -> str:
         gaps.append((advs[0], pays[0]))
     if not gaps:
         return "month"
-    anchor = series_day(pays) if pays else None
-    kinds = [_exact_interval(a, b, anchor) for a, b in gaps]
+    pa = series_day(pays) if pays else None
+    aa = series_day(advs) if advs else None
+    kinds = [_exact_interval(a, b, pa) for a, b in zip(pays, pays[1:])] + \
+            [_exact_interval(a, b, aa) for a, b in zip(advs, advs[1:])]
+    if advs and pays and advs[0] < pays[0]:
+        kinds.append(_exact_interval(advs[0], pays[0], pa))
     counts = Counter(kinds)
     days = lambda k: _approx_days(k) if isinstance(k, str) else k
     top = max(counts.values())
@@ -248,7 +264,12 @@ def _positions(flows: List[Flow], unit: str):
     dated = [(cast(date, f.when), f.amount) for f in flows]
     base = min(d for d, _ in dated)    # zero point: the earliest flow (Appendix J (c)(7)(ii))
     pays = [d for d, a in dated if a < 0]
-    anchor = series_day(pays) if pays else None
+    if len(pays) >= 2:
+        anchor: int | None = series_day(pays)
+    else:
+        # One payment is not a series: it has no nominal day of its own, so it is measured back to the zero
+        # point's day, as apr_single_payment does (Jan 28 -> Feb 28 is one month, Jan 31 -> Feb 28 too).
+        anchor = base.day if base.day > 28 else None
     return [period_position(base, d, unit, anchor) + (a,) for d, a in dated]
 
 
@@ -564,9 +585,8 @@ def finance_charge_at_apr(flows, annual_rate: float, unit: str) -> float:
     i = annual_rate / UNITS[unit][0]
     pay = [(t, f, -a) for t, f, a in pos if a < 0]
     implied_af = sum(a * math.exp(-t * math.log1p(i)) / (1 + f * i) for t, f, a in pay)
-    adv_pv = sum(a * math.exp(-t * math.log1p(i)) / (1 + f * i) for t, f, a in pos if a > 0)
     total = sum(a for _, _, a in pay)
-    return total - implied_af + 0 * adv_pv
+    return total - implied_af
 
 
 def within_tolerance(disclosed: float, computed: float, irregular: bool = False) -> bool:

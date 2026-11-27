@@ -14,8 +14,10 @@ certification.** Say so in every answer.
 
 ### 1. Collect the inputs
 From the disclosure or the contract:
-- funding provided, total amount owed (purchased amount), prepaid fees, split rate (holdback %),
-  payment frequency (usually business-day debits), funding date, any contractual minimum payment;
+- funding provided (the cash the business receives after fees are withheld; if the contract shows the
+  amount before fees, pass it with `prepaid_fees` and `funding_basis: "gross"`), total amount owed
+  (purchased amount), prepaid fees, split rate (holdback %), payment frequency (usually business-day
+  debits), funding date, any contractual minimum payment;
 - the sales history: monthly sales, oldest first, and the provider's averaging window (4–12 months).
   New York also allows the average of the highest-sales months within the past twelve
   (`window_method: "highest"`).
@@ -45,8 +47,11 @@ Monthly Cost when payments aren't monthly. Then:
   (true-ups, stepped splits, thresholds, different sales data) and say what would need checking. Both are allowed
   (10 CCR 940(a); 23 NYCRR 600.3(b)).
 - **Tolerance:** CA (10 CCR 955(a)) and NY (23 NYCRR 600.4(a)) treat a disclosed APR as accurate
-  within 1/8 point (1/4 if the schedule is irregular, which the tool detects) **or** when the signed
-  percentage difference (determined − disclosed) / disclosed is 2.5% or less.
+  within 1/8 point (1/4 if the schedule is irregular; CapKit treats business-day debits as irregular)
+  **or** when the signed percentage difference (determined − disclosed) / disclosed is 2.5% or less.
+  So any overstated APR passes, and 1/8 vs 1/4 matters only below about a 10% APR.
+- **Fees:** if the result has a `warning` or `check_if_funding_provided_is_before_fees`, report it: it
+  shows the APR and verdict if funding provided was the amount before fees.
 - **Enter every contract feature you can:** a split that changes over time (`split_schedule`),
   amounts paid to others on the merchant's behalf (`paid_on_behalf`, which count toward the
   coverage threshold), excluded months (`exclude_months`). Always report the `modeled` /

@@ -6,8 +6,11 @@ that Friday, so an ACH debit still settles. Source: Federal Reserve Financial Se
 """
 from __future__ import annotations
 
+import re
 from datetime import date, timedelta
 from functools import cache
+
+_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 def _nth_weekday(year: int, month: int, weekday: int, n: int) -> date:
@@ -80,4 +83,10 @@ def add_months(d: date, k: int) -> date:
 
 
 def parse(d) -> date:
-    return d if isinstance(d, date) else date.fromisoformat(str(d))
+    """A ``date``, or an ISO ``YYYY-MM-DD`` string. Only that one form is accepted, so the result does not
+    depend on the Python version (3.11+ ``fromisoformat`` also reads "20270104" and week dates; 3.9 does not)."""
+    if isinstance(d, date):
+        return d
+    if not (isinstance(d, str) and _ISO_DATE.fullmatch(d)):
+        raise ValueError(f"a date must be a YYYY-MM-DD string, got {d!r:.40}")
+    return date.fromisoformat(d)        # still rejects impossible dates such as 2027-02-30

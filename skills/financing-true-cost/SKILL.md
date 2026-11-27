@@ -26,6 +26,9 @@ Map what the user has (term sheet, broker email, contract summary) to an offer t
   the *guaranteed portion*.
 - **Factoring:** face, advance rate, fee per 30 days, days until the customer pays.
 - **Supplier terms:** e.g. 2/10 net 30 → `early_pay_cost`.
+- **Equipment lease:** equipment cost, payment, months, payments due at signing, buyout. Ask whether
+  the equipment goes back at the end or the business keeps it, and pass `end_of_term` (`return` /
+  `own`). Without it, a lease with no buyout gets no after-tax figure.
 
 Unknown dates: use a near-future Monday and say so. Dates matter for daily debits (weekends and
 Federal Reserve holidays are skipped).
@@ -78,4 +81,5 @@ every rate and limit with its source and verified-on date.
 - SBA parameters (spreads, fees) change by fiscal year and are flagged `verify` in the parameter
   table. Say so when they drive the answer.
 - Not legal, tax or financial advice. After-tax figures are illustrations at the marginal rate given;
-  leases with a nominal buyout get no after-tax figure because they are usually purchases.
+  leases with a nominal buyout, or that the business keeps, get no after-tax figure because they are
+  usually purchases, and neither does a lease whose end of term is unknown.
