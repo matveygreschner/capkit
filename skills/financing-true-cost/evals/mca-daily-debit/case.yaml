@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: mca-daily-debit
+expected_outcome: |
+  Runs true_cost on the daily-debit MCA and reports the Appendix J APR on the calendar-day convention, contrasting it with the broker's quote.

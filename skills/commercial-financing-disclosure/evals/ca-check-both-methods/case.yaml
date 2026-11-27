@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: ca-check-both-methods
+expected_outcome: |
+  Recomputes a CA disclosure and accepts a disclosed APR that matches either the actuarial or the U.S. Rule method.

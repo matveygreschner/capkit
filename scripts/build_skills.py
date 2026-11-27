@@ -1,0 +1,181 @@
+"""Vendor the engine into each skill, generate the skills' reference files, validate the skills, and
+package them as downloadable archives in dist/.
+
+    python scripts/build_skills.py            # build + package
+    python scripts/build_skills.py --check    # fail if committed skill files are stale (CI)
+
+Each skill ships its own copy of ``src/capkit`` so it runs anywhere with Python 3.9+ and no install
+step (Claude Code, Claude.ai, the API code-execution tool). Only the optimizer needs scipy.
+"""
+from __future__ import annotations
+
+import argparse
+import filecmp
+import json
+import re
+import shutil
+import sys
+import zipfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from capkit import api, params as P  # noqa: E402
+
+SKILLS = ROOT / "skills"
+DIST = ROOT / "dist"
+IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store")
+
+SKILL_SPEC = {
+    "financing-true-cost": {
+        "commands": ["true_cost", "compare_offers", "apr", "early_pay_cost", "sba_fee", "params", "prime_rate"],
+        "docs": {"method.md": "docs/method.md"}},
+    "funding-mix-optimizer": {
+        "commands": ["optimize_mix", "evaluate_mix", "true_cost", "early_pay_cost", "workbook", "params"],
+        "docs": {"model.md": "docs/model.md", "scenario.md": "docs/scenario.md", "method.md": "docs/method.md"}},
+    "commercial-financing-disclosure": {
+        "commands": ["disclosure_estimate", "check_disclosure", "apr", "true_cost", "params"],
+        "docs": {"rules.md": "docs/disclosure-rules.md", "method.md": "docs/method.md"}},
+}
+
+
+def _fmt(v):
+    if isinstance(v, str):
+        return "**required**" if v == "REQUIRED" else f'"{v}"'
+    return json.dumps(v) if isinstance(v, (list, tuple, dict)) else repr(v)
+
+
+def commands_md(names) -> str:
+    out = ["# Command reference", "",
+           "Run `python scripts/capkit_cli.py <command> '<json>'` (or `-` to read the JSON from stdin). "
+           "Arguments not marked required are optional. Output is JSON: `{\"result\": ...}` or `{\"error\": ...}`.", ""]
+    for n in names:
+        d = api.describe(n)
+        args = ", ".join(f"`{k}`={_fmt(v)}" for k, v in d["args"].items()) or "(none)"
+        out += [f"## `{n}`", "", d["doc"] or "", "", f"Args: {args}", ""]
+    return "\n".join(out)
+
+
+def _val(v):
+    if isinstance(v, float) and v < 1:
+        return f"{v:.4%}".rstrip("0").rstrip(".")
+    if isinstance(v, (int, float)):
+        return f"{v:,}"
+    return json.dumps(v, default=lambda x: "inf").replace("Infinity", "inf")
+
+
+def params_md() -> str:
+    out = ["# Parameters", "", "Generated from `capkit/params.py`. `verify` = best available figure, re-check against "
+           "the source before relying on it; `placeholder` = example value only.", "",
+           "| Key | Value | Description | Source | Verified on | Status |", "|---|---|---|---|---|---|"]
+    for k, e in P.PARAMS.items():
+        out.append(f"| `{k}` | {_val(e['value'])} | {e['desc']} | {e['source']} | {e['verified_on']} | {e['status']} |")
+    return "\n".join(out) + "\n"
+
+
+def write(path: Path, text: str, check: bool, stale: list):
+    if check:
+        if not path.exists() or path.read_text() != text:
+            stale.append(str(path.relative_to(ROOT)))
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+
+
+def vendor(skill: str, check: bool, stale: list):
+    dest = SKILLS / skill / "scripts" / "capkit"
+    src = ROOT / "src" / "capkit"
+    if check:
+        cmp = filecmp.dircmp(src, dest, ignore=["__pycache__"]) if dest.exists() else None
+
+        def diff(c):
+            return bool(c.left_only or c.right_only or c.diff_files) or any(diff(s) for s in c.subdirs.values())
+        if cmp is None or diff(cmp):
+            stale.append(str(dest.relative_to(ROOT)))
+        return
+    if dest.exists():
+        shutil.rmtree(dest)
+    shutil.copytree(src, dest, ignore=IGNORE)
+
+
+def validate(skill_dir: Path) -> list:
+    errs = []
+    text = (skill_dir / "SKILL.md").read_text()
+    m = re.match(r"^---\n(.*?)\n---\n", text, re.S)
+    if not m:
+        return [f"{skill_dir.name}: SKILL.md has no YAML frontmatter"]
+    fm = dict(re.findall(r"^(\w[\w-]*):\s*(.+)$", m.group(1), re.M))
+    if fm.get("name") != skill_dir.name:
+        errs.append(f"{skill_dir.name}: frontmatter name {fm.get('name')!r} must match folder")
+    if not re.fullmatch(r"[a-z0-9-]{1,64}", fm.get("name", "")):
+        errs.append(f"{skill_dir.name}: name must be lowercase letters, digits, hyphens")
+    desc = fm.get("description", "")
+    if not desc or len(desc) > 1024 or "<" in desc or ">" in desc:
+        errs.append(f"{skill_dir.name}: description missing, >1024 chars ({len(desc)}), or contains angle brackets")
+    if len(text.splitlines()) > 500:
+        errs.append(f"{skill_dir.name}: SKILL.md over 500 lines")
+    for ref in re.findall(r"`((?:references|scripts|assets)/[^`\s]+)`", text):
+        if not (skill_dir / ref).exists():
+            errs.append(f"{skill_dir.name}: SKILL.md mentions missing file {ref}")
+    return errs
+
+
+def package(skill_dir: Path) -> list:
+    DIST.mkdir(exist_ok=True)
+    made = []
+    for ext in (".zip", ".skill"):
+        out = DIST / f"{skill_dir.name}{ext}"
+        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+            for f in sorted(skill_dir.rglob("*")):
+                rel = f.relative_to(skill_dir.parent)
+                if f.is_dir() or "__pycache__" in rel.parts or f.suffix == ".pyc" or f.name == ".DS_Store" \
+                        or (len(rel.parts) > 1 and rel.parts[1] == "evals"):
+                    continue
+                zi = zipfile.ZipInfo(str(rel).replace("\\", "/"), date_time=(2026, 1, 1, 0, 0, 0))
+                zi.compress_type = zipfile.ZIP_DEFLATED
+                zi.external_attr = 0o644 << 16
+                z.writestr(zi, f.read_bytes())
+        made.append(out)
+    return made
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--check", action="store_true")
+    a = ap.parse_args()
+    stale: list = []
+    covered = set()
+    for skill, spec in SKILL_SPEC.items():
+        vendor(skill, a.check, stale)
+        covered |= set(spec["commands"])
+        write(SKILLS / skill / "references/commands.md", commands_md(spec["commands"]), a.check, stale)
+        write(SKILLS / skill / "references/parameters.md", params_md(), a.check, stale)
+        for name, src in spec["docs"].items():
+            write(SKILLS / skill / "references" / name, (ROOT / src).read_text(), a.check, stale)
+    missing = sorted(set(api.COMMANDS) - covered)
+    errs = [f"commands in no skill: {missing}"] if missing else []
+    errs += [e for d in sorted(SKILLS.iterdir()) if d.is_dir() for e in validate(d)]
+    bakery = SKILLS / "funding-mix-optimizer/assets/bakery.json"
+    if not bakery.exists() or bakery.read_text() != (ROOT / "examples/bakery.json").read_text():
+        if a.check:
+            stale.append(str(bakery.relative_to(ROOT)))
+        else:
+            shutil.copy(ROOT / "examples/bakery.json", bakery)
+    if errs or stale:
+        for e in errs:
+            print("INVALID", e)
+        for s in stale:
+            print("STALE  ", s, "- run python scripts/build_skills.py")
+        sys.exit(1)
+    if a.check:
+        print("skills are valid and up to date")
+        return
+    for d in sorted(SKILLS.iterdir()):
+        if d.is_dir():
+            for f in package(d):
+                print("packaged", f.relative_to(ROOT), f"{f.stat().st_size / 1024:.0f} KB")
+
+
+if __name__ == "__main__":
+    main()
