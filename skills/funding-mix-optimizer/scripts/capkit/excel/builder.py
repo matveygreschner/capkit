@@ -100,10 +100,16 @@ def sheet_apr(wb, c):
     _label_out(c, ws, 10, "Net proceeds", "=B3-B4", "net", USD)
     _label_out(c, ws, 11, "Number of debits", "=CEILING(B9/B6-0.000000001,1)", "n")
     _label_out(c, ws, 12, "Finance charge", "=B9-B10", "finance_charge", USD)
-    _label_out(c, ws, 13, "APR (Appendix J actuarial)", f"=IRR(F3:F{3 + PERIOD_ROWS},0.01)*B7", "apr", PCT)
-    _label_out(c, ws, 14, "Effective annual rate", f"=(1+IRR(F3:F{3 + PERIOD_ROWS},0.01))^B7-1", "ear", PCT)
+    na = '"n/a: schedule longer than the grid"'
+    _label_out(c, ws, 13, "APR (Appendix J actuarial)",
+               f"=IF(B11<={PERIOD_ROWS},IRR(F3:F{3 + PERIOD_ROWS},0.01)*B7,{na})", "apr", PCT)
+    _label_out(c, ws, 14, "Effective annual rate",
+               f"=IF(B11<={PERIOD_ROWS},(1+IRR(F3:F{3 + PERIOD_ROWS},0.01))^B7-1,{na})", "ear", PCT)
     _label_out(c, ws, 15, "Simple annualized quote (not an APR)", "=(B9-B10)/B10/(B11/B7)", "simple", PCT,
                "what 'cost / term' calculators show")
+    _label_out(c, ws, 16, "Schedule fits in the grid?",
+               f'=IF(B11<={PERIOD_ROWS},"OK","TOO LONG: more than {PERIOD_ROWS} debits, APR above is NOT valid")',
+               "fits")
     ws["E2"], ws["F2"] = "Period", "Cash flow"
     ws["E2"].font = ws["F2"].font = HEAD
     for k in range(PERIOD_ROWS + 1):
@@ -131,7 +137,13 @@ def sheet_daily(wb, c):
     _label_out(c, ws, 11, "Number of debits", "=CEILING(B10/B7-0.000000001,1)", "n")
     _label_out(c, ws, 12, "Last debit date", f"=INDEX(F3:F{3 + DAILY_ROWS},MATCH(B11,H3:H{3 + DAILY_ROWS},0))",
                "last", "yyyy-mm-dd")
-    _label_out(c, ws, 13, "APR (Appendix J, one-day unit period)", f"=IRR(I3:I{3 + DAILY_ROWS},0.001)*365", "apr", PCT)
+    _label_out(c, ws, 13, "APR (Appendix J: one-day unit period; one debit = single-payment rule)",
+               f'=IF(MAX(H3:H{3 + DAILY_ROWS})<B11,"n/a: schedule longer than the grid",'
+               f'IF(B11=1,IF(EDATE(B3,ROUND((B12-B3)/30.4,0))=B12,12/ROUND((B12-B3)/30.4,0),365/(B12-B3))'
+               f'*(B10/(B4-B5)-1),IRR(I3:I{3 + DAILY_ROWS},0.001)*365))', "apr", PCT)
+    _label_out(c, ws, 15, "Schedule fits in the grid?",
+               f'=IF(MAX(H3:H{3 + DAILY_ROWS})>=B11,"OK","TOO LONG: schedule exceeds {DAILY_ROWS} days, APR is NOT valid")',
+               "fits")
     _label_out(c, ws, 14, "Business-day rate x 252 (NOT an Appendix J figure)",
                f"=IRR(J3:J{3 + DAILY_ROWS},0.001)*252", "bd252", PCT, "shown for contrast only")
     for k, h in zip("EFGHIJ", ["Day", "Date", "Debit day?", "Debits so far", "Cash flow", "Business-day flow"]):
@@ -180,14 +192,17 @@ def sheet_loans(wb, c):
     _label_input(c, ws, 13, "Prime rate", P.param("prime_rate"), "prime", PCT, "placeholder - update from FRED DPRIME")
     _label_input(c, ws, 14, "Spread over Prime (blank = SOP 50 10 maximum)", None, "sba_spread_in", PCT)
     _label_input(c, ws, 15, "Term (months)", 120, "sba_months")
-    _label_input(c, ws, 16, "FY fee rate on guaranteed portion (blank = FY table)", None, "sba_fee_in", PCT)
+    _label_input(c, ws, 16, "Fee rate on guaranteed portion (blank = FY2026/FY2027 table)", None, "sba_fee_in", PCT)
     _label_out(c, ws, 17, "Maximum spread for this size", "=INDEX($F$4:$F$7,MATCH(B12,$E$4:$E$7,1))",
                "sba_max_spread", PCT)
     _label_out(c, ws, 18, "Rate", '=B13+IF(B14="",B17,B14)', "sba_rate", PCT)
     _label_out(c, ws, 19, "Guaranty share", "=IF(B12<=150000,0.85,0.75)", "sba_share", PCT)
     _label_out(c, ws, 20, "Fee rate on guaranteed portion",
                '=IF(B16="",INDEX($I$4:$I$6,MATCH(B12,$H$4:$H$6,1)),B16)', "sba_fee_rate", PCT)
-    _label_out(c, ws, 21, "Upfront guaranty fee", "=B20*B19*B12", "sba_fee", USD)
+    _label_out(c, ws, 21, "Upfront guaranty fee",
+               '=IF(B16<>"",B16*B19*B12,IF(B15<=12,0.0025*B19*B12,IF(B12<=700000,B20*B19*B12,'
+               '0.035*MIN(B19*B12,1000000)+0.0375*MAX(0,B19*B12-1000000))))', "sba_fee", USD,
+               "FY2026/FY2027 standard rates (identical); 0.25% if 12 months or less; 0% tiers not applied")
     _label_out(c, ws, 22, "Statutory fee ceiling",
                "=B19*B12*INDEX($L$4:$L$6,MATCH(B12,$K$4:$K$6,1))+MAX(0,B19*B12-1000000)*0.0025",
                "sba_ceiling", USD)
@@ -205,7 +220,7 @@ def sheet_loans(wb, c):
             ws[f"{c1}{4 + k}"], ws[f"{c2}{4 + k}"] = lo, v       # applies from `lo` (exclusive of the
             lo = round(b + 0.01, 2) if math.isfinite(b) else lo   # previous bound) up to this row's bound
     table("E", "F", P.param("sba_max_spread"))
-    table("H", "I", P.param("sba_fee_fy")[2026])
+    table("H", "I", P.param("sba_fee_fy")[2027]["tiers"])
     table("K", "L", P.param("sba_fee_ceiling"))
     ws["E9"] = "Sources: SOP 50 10 8; SBA FY fee notice; 15 U.S.C. 636(a)(18)(A). Verify each year."
     ws.column_dimensions["A"].width = 50
@@ -228,7 +243,10 @@ def sheet_earlypay(wb, c):
     _label_out(c, ws, 13, "Advance", "=B9*B10", "fac_adv", USD)
     _label_out(c, ws, 14, "Fee", "=B11*B9*CEILING(B12/30,1)", "fac_fee", USD)
     _label_out(c, ws, 15, "Rebate at collection", "=B9-B13-B14", "fac_rebate", USD)
-    _label_out(c, ws, 16, "APR (one-day unit)", "=((B13+B14)/B13)^(1/B12)*365-365", "fac_apr", PCT)
+    _label_input(c, ws, 17, "Sale date", date(2027, 1, 4), "sale_date", "yyyy-mm-dd")
+    _label_out(c, ws, 16, "APR (Appendix J single payment: term is the unit-period)",
+               "=IF(EDATE(B17,ROUND(B12/30.4,0))=B17+B12,12/ROUND(B12/30.4,0),365/B12)*(B14/B13)",
+               "fac_apr", PCT, "valid for terms under one year")
     ws.column_dimensions["A"].width = 48
     ws.column_dimensions["B"].width = 16
 
@@ -266,9 +284,15 @@ def sheet_disclosure(wb, c):
     _label_out(c, ws, 20, "Estimated term (months, days / 30.4)", "=ROUND(B19/30.4,1)", "term_months")
     _label_out(c, ws, 21, "Finance charge", "=B5-B4", "fc", USD)
     _label_out(c, ws, 22, "Estimated monthly cost", "=B5/(B19/30.4)", "monthly_cost", USD)
-    _label_out(c, ws, 23, "Estimated APR (actuarial)", f"=IRR(L4:L{4 + DAILY_ROWS},0.001)*365", "apr", PCT)
-    _label_out(c, ws, 24, "Disclosed APR within 1/8 point of actuarial?", '=IF(ABS(B11-B23)<=0.00125,"yes","no")',
-               "check")
+    _label_out(c, ws, 23, "Estimated APR (actuarial)",
+               f'=IF(MAX(K4:K{4 + DAILY_ROWS})<B17,"n/a: term longer than the grid",IRR(L4:L{4 + DAILY_ROWS},0.001)*365)',
+               "apr", PCT)
+    _label_out(c, ws, 24, "Disclosed APR within tolerance of actuarial? (CA 955 / NY 600.4)",
+               '=IF(OR(ABS(B11-B23)<=0.00125,AND(B11>0,(B23-B11)/B11<=0.025)),"yes","no")', "check",
+               "1/8 point, or a signed percentage difference of 2.5% or less; U.S. Rule figure: see the engine")
+    _label_out(c, ws, 26, "Schedule fits in the grid?",
+               f'=IF(MAX(K4:K{4 + DAILY_ROWS})>=B17,"OK","TOO LONG: term exceeds {DAILY_ROWS} days, figures are NOT valid")',
+               "fits")
     ws["A25"] = "The U.S. Rule figure (also permitted) is computed by the engine; see the disclosure skill."
     for k, h in zip("HIJKL", ["Day", "Date", "Debit day?", "Debits so far", "Cash flow"]):
         ws[f"{k}3"] = h
@@ -290,7 +314,7 @@ def sheet_disclosure(wb, c):
 
 def _holiday_list():
     out = []
-    for y in range(2025, 2031):
+    for y in range(2025, 2041):
         out += sorted(frb_holidays(y))
     return out
 

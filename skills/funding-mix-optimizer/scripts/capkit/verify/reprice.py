@@ -45,7 +45,7 @@ def _mca_flows(o, amount, s, u, T):
             deb[t] = d
             owed -= d
         if u is not None and t == u:
-            pre[t] = (1 - o.get("payoff_discount", 0.0)) * owed
+            pre[t] = (1 - o.get("payoff_discount", 0.0)) * (1 + o.get("prepay_penalty", 0.0)) * owed
             owed = 0.0
             break
     return deb, pre, owed if u is None else 0.0
@@ -131,9 +131,16 @@ def evaluate(scenario: dict, plan: dict, H: float = 0.0, tol: float = 1e-6) -> d
     bal = plan.get("loc_balance") or [0.0] * T
     bal = [loc.get("balance", 0.0)] + [float(v) for v in bal]
     e = {int(k): float(v) for k, v in (plan.get("early_pay") or {}).items()}
+    for n, v in e.items():
+        if not (-tol <= v <= 1 + tol):
+            problems.append(f"invoice {n}: early-pay share {v} must be between 0 and 1")
+        elif not (0 <= n < len(inv)) or inv[n]["discount_week"] > T or inv[n].get("discount", 0) <= 0:
+            problems.append(f"invoice {n}: no early-payment discount is available inside the horizon")
     ysales = [(int(y["receivable"]), int(y["week"]), float(y["share"])) for y in plan.get("factoring", [])]
     sold = {}
     for n, q, sh in ysales:
+        if not (-tol <= sh <= 1 + tol):
+            problems.append(f"receivable {n}: share sold {sh} must be between 0 and 1")
         sold[n] = sold.get(n, 0.0) + sh
         r = recv[n]
         if not (r["issue_week"] <= q < r["collect_week"]):
@@ -172,7 +179,8 @@ def evaluate(scenario: dict, plan: dict, H: float = 0.0, tol: float = 1e-6) -> d
                 - interest + inv_cash + fac_cash)
         if floor[t] is not None and B[t] < floor[t] - tol:
             problems.append(f"week {t}: cash {B[t]:,.2f} below the floor {floor[t]:,.2f}")
-        if R[t] is not None and alpha < 1.0 and debits[t] + interest > alpha * R[t] + tol:
+        if R[t] is not None and (alpha < 1.0 or sc.get("revenue") is not None) \
+                and debits[t] + interest > alpha * R[t] + tol:
             problems.append(f"week {t}: debits {debits[t] + interest:,.2f} exceed {alpha:.0%} of revenue")
         if fac:
             out = sum(aF * recv[n]["face"] * sh for n, q, sh in ysales if q <= t < recv[n]["collect_week"])
@@ -184,6 +192,12 @@ def evaluate(scenario: dict, plan: dict, H: float = 0.0, tol: float = 1e-6) -> d
                       "loc_balance": round(bal[t], 2), "invoices_paid": round(-inv_cash, 2),
                       "factoring_cash": round(fac_cash, 2), "cash": round(B[t], 2)})
 
+    dscr = sc.get("dscr")
+    if dscr:
+        service = sum(debits[1:]) + sum(iL * bal[t - 1] for t in range(1, T + 1))
+        if service > dscr["ebitda"] / dscr["min"] + tol:
+            problems.append(f"debt service {service:,.2f} exceeds EBITDA / DSCR minimum "
+                            f"({dscr['ebitda'] / dscr['min']:,.2f})")
     terminal = (1 + idep * H) * B[T] - (1 + iL * H) * bal[T] - open_liab
     for n, i in enumerate(inv):
         if i["net_week"] > T:

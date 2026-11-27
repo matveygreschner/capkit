@@ -6,6 +6,7 @@
   "factor": "B5",
   "fees": "B4",
   "finance_charge": "B12",
+  "fits": "B16",
   "n": "B11",
   "net": "B10",
   "owed": "B9",
@@ -19,6 +20,7 @@
   "bd252": "B14",
   "factor": "B6",
   "fees": "B5",
+  "fits": "B15",
   "fund": "B3",
   "last": "B12",
   "n": "B11",
@@ -33,6 +35,7 @@
   "disclosed": "B11",
   "fc": "B21",
   "fees": "B6",
+  "fits": "B26",
   "fund": "B9",
   "funding": "B4",
   "last": "B18",
@@ -73,7 +76,8 @@
   "fac_rebate": "B15",
   "face": "B9",
   "fee30": "B11",
-  "nd": "B5"
+  "nd": "B5",
+  "sale_date": "B17"
  },
  "Loans": {
   "prime": "B13",

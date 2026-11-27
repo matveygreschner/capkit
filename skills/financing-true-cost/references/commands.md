@@ -40,9 +40,13 @@ Args: `discount`=0.02, `discount_days`=10, `net_days`=30
 
 ## `sba_fee`
 
-SBA 7(a) upfront guaranty fee: rate x guaranteed portion, checked against the statutory ceiling.
+SBA 7(a) upfront guaranty fee on the guaranteed portion. The fee year follows ``approval_date``
+(FY2027 = approved Oct 1, 2026 - Sep 30, 2027). Short-term rate for ``months`` <= 12, size tiers
+otherwise, the 0% tier if ``zero_fee_eligible``; ``program`` = standard | express_veteran | ewcp | wcp;
+loans approved within 90 days combine (``prior_90_day_amount`` / ``prior_90_day_fee``). Checked
+against the statutory ceiling.
 
-Args: `amount`=**required**, `fy`=2026, `rate`=None
+Args: `amount`=**required**, `approval_date`=**required**, `rate`=None, `months`=120, `zero_fee_eligible`=False, `program`="standard", `prior_90_day_amount`=0.0, `prior_90_day_fee`=0.0
 
 ## `params`
 

@@ -53,13 +53,20 @@ def apr(flows: list, unit: Optional[str] = None, method: str = "both"):
     """APR of arbitrary cash flows. ``flows`` = [[date-or-period, amount], ...]; advances +, payments -.
     ``unit`` = day|week|biweek|4week|semimonth|month|bimonth|quarter|semiannual|year (default: the most
     common payment interval). ``method`` = actuarial|us_rule|both."""
+    if unit is not None and unit not in A.UNITS:
+        raise ValueError(f"unit must be one of {sorted(A.UNITS)}")
     out = {}
     if method in ("actuarial", "both"):
         out["apr_actuarial"] = A.apr_actuarial(flows, unit)
     if method in ("us_rule", "both"):
         out["apr_us_rule"] = A.apr_us_rule(flows, unit)
     fl = A._flows(flows)
-    out["unit_period"] = unit or A._default_unit(fl)
+    out["unit_period"] = unit or ("term" if A._single_pair(fl) else A._default_unit(fl))
+    if out["unit_period"] != "term":
+        n = A.count_rates(fl, out["unit_period"])
+        out["rates_that_solve"] = n
+        if n > 1:
+            out["warning"] = f"{n} rates solve these cash flows; the smallest positive one is reported"
     return out
 
 
@@ -72,26 +79,37 @@ def disclosure_estimate(funding_provided: float, total_owed: float, split_rate: 
                         avg_monthly_sales: Optional[float] = None, monthly_sales: Optional[list] = None,
                         window: int = 6, window_method: str = "preceding", state: str = "CA",
                         frequency: str = "business_day", funding_date: str = "2027-01-04",
-                        prepaid_fees: float = 0.0, minimum_payment: float = 0.0):
+                        prepaid_fees: float = 0.0, minimum_payment: float = 0.0, paid_on_behalf: float = 0.0,
+                        split_schedule: Optional[list] = None, exclude_months: Optional[list] = None):
     """CA/NY estimated APR, term, payment and finance charge for a sales-based financing (MCA/RBF) under
-    the historical method. Give ``avg_monthly_sales`` or ``monthly_sales`` (oldest first) + ``window``."""
+    the historical method. Give ``avg_monthly_sales`` or ``monthly_sales`` (oldest first) + ``window``
+    (and ``exclude_months``: indexes into monthly_sales the provider excluded). ``paid_on_behalf`` =
+    amounts paid to others for the recipient (part of the amount financed). ``split_schedule`` =
+    [[from_month, rate], ...] when the split changes. Enter every contract feature you can: the result
+    lists what was and was not modeled."""
     if avg_monthly_sales is None:
         if not monthly_sales:
             raise ValueError("give avg_monthly_sales or monthly_sales")
-        avg_monthly_sales = D.historical_average(monthly_sales, window, state, window_method)
+        avg_monthly_sales = D.historical_average(monthly_sales, window, state, window_method, exclude_months or ())
     return D.estimate(funding_provided, total_owed, split_rate, avg_monthly_sales, frequency, funding_date,
-                      prepaid_fees, minimum_payment, state=state)
+                      prepaid_fees, minimum_payment, state=state, paid_on_behalf=paid_on_behalf,
+                      split_schedule=split_schedule)
 
 
 def check_disclosure(disclosed_apr: float, funding_provided: float, total_owed: float, split_rate: float,
                      avg_monthly_sales: Optional[float] = None, monthly_sales: Optional[list] = None,
                      window: int = 6, window_method: str = "preceding", state: str = "CA",
                      frequency: str = "business_day", funding_date: str = "2027-01-04",
-                     prepaid_fees: float = 0.0, minimum_payment: float = 0.0, irregular: bool = False):
-    """Recompute a CA/NY disclosure and say whether the disclosed estimated APR is consistent with the
-    actuarial method, the U.S. Rule method, both, or neither."""
+                     prepaid_fees: float = 0.0, minimum_payment: float = 0.0, irregular: Optional[bool] = None,
+                     paid_on_behalf: float = 0.0, split_schedule: Optional[list] = None,
+                     exclude_months: Optional[list] = None):
+    """Recompute a CA/NY disclosure and say whether the disclosed estimated APR (a decimal) is reproduced
+    by the actuarial method, the U.S. Rule method, both, or neither, within the CA 10 CCR 955 / NY 23
+    NYCRR 600.4 tolerances. ``irregular`` is detected from the schedule unless given. A non-match is
+    not proof of an error."""
     est = disclosure_estimate(funding_provided, total_owed, split_rate, avg_monthly_sales, monthly_sales,
-                              window, window_method, state, frequency, funding_date, prepaid_fees, minimum_payment)
+                              window, window_method, state, frequency, funding_date, prepaid_fees, minimum_payment,
+                              paid_on_behalf, split_schedule, exclude_months)
     return {"recomputed": est, "check": D.check_disclosed_apr(disclosed_apr, est, state, irregular)}
 
 
@@ -112,11 +130,24 @@ def evaluate_mix(scenario: dict, plan: dict, H: float = 0.0):
     return evaluate(scenario, plan, H)
 
 
-def sba_fee(amount: float, fy: int = 2026, rate: Optional[float] = None):
-    """SBA 7(a) upfront guaranty fee: rate x guaranteed portion, checked against the statutory ceiling."""
-    return {"amount": amount, "guaranty_share": P.sba_guaranty_share(amount),
-            "fee": round(P.sba_upfront_fee(amount, fy, rate), 2), "ceiling": round(P.sba_fee_ceiling(amount), 2),
-            "max_rate_at_prime": P.sba_max_rate(amount)}
+def sba_fee(amount: float, approval_date: str = "REQUIRED", rate: Optional[float] = None, months: int = 120,
+            zero_fee_eligible: bool = False, program: str = "standard", prior_90_day_amount: float = 0.0,
+            prior_90_day_fee: float = 0.0):
+    """SBA 7(a) upfront guaranty fee on the guaranteed portion. The fee year follows ``approval_date``
+    (FY2027 = approved Oct 1, 2026 - Sep 30, 2027). Short-term rate for ``months`` <= 12, size tiers
+    otherwise, the 0% tier if ``zero_fee_eligible``; ``program`` = standard | express_veteran | ewcp | wcp;
+    loans approved within 90 days combine (``prior_90_day_amount`` / ``prior_90_day_fee``). Checked
+    against the statutory ceiling."""
+    from .calendar import parse
+    if approval_date == "REQUIRED":
+        raise ValueError("approval_date is required: the SBA fee year follows the loan's approval date")
+    fy = P.fiscal_year(parse(approval_date))
+    return {"amount": amount, "fiscal_year": fy, "months": months, "program": program,
+            "guaranty_share": P.sba_guaranty_share(amount + prior_90_day_amount),
+            "fee": round(P.sba_upfront_fee(amount, fy, rate, months, zero_fee_eligible, program,
+                                           prior_90_day_amount, prior_90_day_fee), 2),
+            "ceiling": round(P.sba_fee_ceiling(amount), 2), "max_rate_at_prime": P.sba_max_rate(amount),
+            "zero_fee_rule": P.PARAMS["sba_fee_fy"]["value"].get(fy, {}).get("zero_fee_who")}
 
 
 def params(key: Optional[str] = None):
@@ -140,8 +171,13 @@ def workbook(path: str = "CapKit.xlsx"):
 
 
 COMMANDS: Dict[str, Callable] = {f.__name__: f for f in (
-    true_cost, compare_offers, apr, early_pay_cost, disclosure_estimate, check_disclosure, optimize_mix,
-    evaluate_mix, sba_fee, params, prime_rate, workbook)}
+    true_cost, compare_offers, apr, early_pay_cost, disclosure_estimate, check_disclosure, sba_fee, params,
+    prime_rate, workbook)}
+try:        # the experimental optimizer is registered only where its package is present (never in the
+    from . import optimize as _opt   # noqa: F401   released skills, which do not ship it)
+    COMMANDS.update({"optimize_mix": optimize_mix, "evaluate_mix": evaluate_mix})
+except ImportError:    # pragma: no cover
+    pass
 
 
 def describe(name: str) -> dict:
@@ -171,7 +207,22 @@ def _clean(o):
     return o
 
 
+def _finite(o, path="input"):
+    """Reject NaN / Infinity anywhere in the inputs (JSON allows them; money math must not)."""
+    if isinstance(o, float) and not math.isfinite(o):
+        raise ValueError(f"{path} is not a finite number")
+    if isinstance(o, dict):
+        for k, v in o.items():
+            _finite(v, f"{path}.{k}")
+    elif isinstance(o, (list, tuple)):
+        for i, v in enumerate(o):
+            _finite(v, f"{path}[{i}]")
+
+
 def call(name: str, args: Dict[str, Any]):
+    if not isinstance(args, dict):
+        raise ValueError("arguments must be a JSON object")
+    _finite(args)
     if name == "optimize_mix" and "scenario" not in args and "horizon_weeks" in args:
         args = {"scenario": args}
     return COMMANDS[name](**args)

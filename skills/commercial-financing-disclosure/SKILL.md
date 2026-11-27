@@ -34,12 +34,18 @@ python scripts/capkit_cli.py check_disclosure '{"disclosed_apr": 0.6775, "fundin
 Lay the result out like the disclosure table (CA §914 / NY §600.6 rows): Funding Provided, Estimated
 APR, Finance Charge, Estimated Total Payment Amount, Estimated Payment, Estimated Term, and Estimated
 Monthly Cost when payments aren't monthly. Then:
-- **Verdict:** "consistent (actuarial method)", "consistent (U.S. Rule method)", or "inconsistent with
-  both permitted methods". Never flag a disclosure that matches *either* method. Both are allowed
+- **Verdict:** "consistent (actuarial method)", "consistent (U.S. Rule method)", or "not reproduced by
+  either permitted method with these inputs". Never flag a disclosure that matches *either* method, and
+  never call a non-match an error or a violation: list the unmodeled contract features the tool returns
+  (true-ups, stepped splits, thresholds, different sales data) and say what would need checking. Both are allowed
   (10 CCR 940(a); 23 NYCRR 600.3(b)).
-- **Tolerance:** NY allows 1/8 point (1/4 if irregular) **or** a 2.5% percentage difference
-  (§600.4). For CA, CapKit compares at the Reg Z 1/8 point for reference only, because no separate CA
-  tolerance provision was located. Say this.
+- **Tolerance:** CA (10 CCR 955(a)) and NY (23 NYCRR 600.4(a)) treat a disclosed APR as accurate
+  within 1/8 point (1/4 if the schedule is irregular, which the tool detects) **or** when the signed
+  percentage difference (determined − disclosed) / disclosed is 2.5% or less.
+- **Enter every contract feature you can:** a split that changes over time (`split_schedule`),
+  amounts paid to others on the merchant's behalf (`paid_on_behalf`, which count toward the
+  coverage threshold), excluded months (`exclude_months`). Always report the `modeled` /
+  `not_modeled` lists, even when the verdict is "consistent".
 - **Where a mismatch comes from:** a different sales average or window, a different payment-days
   calendar, fees left out of the finance charge, or minimum payments. Re-run with alternatives to
   show which assumption reproduces the disclosed figure.
@@ -51,5 +57,6 @@ Federal Reserve holiday calendar.
 ## Guardrails
 - Coverage: CA offers of $500,000 or less; NY offers of $2,500,000 or less, with exemptions (banks,
   real-estate-secured, very small providers). Check the `covered` field.
-- An MCA is a purchase of receivables, not a loan. The estimated APR is a disclosure metric.
+- An MCA is usually structured as a purchase of receivables; whether a particular contract is a loan is
+  a legal question. Never call it a loan. The estimated APR is a disclosure metric.
 - For an actual compliance program, the provider's counsel must review. This tool reproduces the math.

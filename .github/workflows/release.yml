@@ -19,6 +19,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/*.zip dist/*.skill workbook/CapKit.xlsx \
-            --title "CapKit $GITHUB_REF_NAME" --generate-notes || \
-          gh release upload "$GITHUB_REF_NAME" dist/*.zip dist/*.skill workbook/CapKit.xlsx --clobber
+          ASSETS="dist/financing-true-cost.zip dist/financing-true-cost.skill \
+                  dist/commercial-financing-disclosure.zip dist/commercial-financing-disclosure.skill \
+                  workbook/CapKit.xlsx"
+          for f in $ASSETS; do test -f "$f" || { echo "missing $f"; exit 1; }; done
+          if ls dist | grep -q funding-mix-optimizer; then echo "frozen optimizer must not ship"; exit 1; fi
+          gh release create "$GITHUB_REF_NAME" $ASSETS --title "CapKit $GITHUB_REF_NAME" --generate-notes || \
+          gh release upload "$GITHUB_REF_NAME" $ASSETS --clobber

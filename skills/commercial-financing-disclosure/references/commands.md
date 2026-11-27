@@ -5,16 +5,22 @@ Run `python scripts/capkit_cli.py <command> '<json>'` (or `-` to read the JSON f
 ## `disclosure_estimate`
 
 CA/NY estimated APR, term, payment and finance charge for a sales-based financing (MCA/RBF) under
-the historical method. Give ``avg_monthly_sales`` or ``monthly_sales`` (oldest first) + ``window``.
+the historical method. Give ``avg_monthly_sales`` or ``monthly_sales`` (oldest first) + ``window``
+(and ``exclude_months``: indexes into monthly_sales the provider excluded). ``paid_on_behalf`` =
+amounts paid to others for the recipient (part of the amount financed). ``split_schedule`` =
+[[from_month, rate], ...] when the split changes. Enter every contract feature you can: the result
+lists what was and was not modeled.
 
-Args: `funding_provided`=**required**, `total_owed`=**required**, `split_rate`=**required**, `avg_monthly_sales`=None, `monthly_sales`=None, `window`=6, `window_method`="preceding", `state`="CA", `frequency`="business_day", `funding_date`="2027-01-04", `prepaid_fees`=0.0, `minimum_payment`=0.0
+Args: `funding_provided`=**required**, `total_owed`=**required**, `split_rate`=**required**, `avg_monthly_sales`=None, `monthly_sales`=None, `window`=6, `window_method`="preceding", `state`="CA", `frequency`="business_day", `funding_date`="2027-01-04", `prepaid_fees`=0.0, `minimum_payment`=0.0, `paid_on_behalf`=0.0, `split_schedule`=None, `exclude_months`=None
 
 ## `check_disclosure`
 
-Recompute a CA/NY disclosure and say whether the disclosed estimated APR is consistent with the
-actuarial method, the U.S. Rule method, both, or neither.
+Recompute a CA/NY disclosure and say whether the disclosed estimated APR (a decimal) is reproduced
+by the actuarial method, the U.S. Rule method, both, or neither, within the CA 10 CCR 955 / NY 23
+NYCRR 600.4 tolerances. ``irregular`` is detected from the schedule unless given. A non-match is
+not proof of an error.
 
-Args: `disclosed_apr`=**required**, `funding_provided`=**required**, `total_owed`=**required**, `split_rate`=**required**, `avg_monthly_sales`=None, `monthly_sales`=None, `window`=6, `window_method`="preceding", `state`="CA", `frequency`="business_day", `funding_date`="2027-01-04", `prepaid_fees`=0.0, `minimum_payment`=0.0, `irregular`=False
+Args: `disclosed_apr`=**required**, `funding_provided`=**required**, `total_owed`=**required**, `split_rate`=**required**, `avg_monthly_sales`=None, `monthly_sales`=None, `window`=6, `window_method`="preceding", `state`="CA", `frequency`="business_day", `funding_date`="2027-01-04", `prepaid_fees`=0.0, `minimum_payment`=0.0, `irregular`=None, `paid_on_behalf`=0.0, `split_schedule`=None, `exclude_months`=None
 
 ## `apr`
 

@@ -58,8 +58,10 @@ def commands_md(names) -> str:
     return "\n".join(out)
 
 
-def _val(v):
-    if isinstance(v, float) and v < 1:
+def _val(v, unit=""):
+    if "percentage point" in unit:
+        return f"{v} percentage points"
+    if isinstance(v, float) and v < 1 and unit in ("share", "annual", "over Prime", "share of guaranteed portion"):
         return f"{v:.4%}".rstrip("0").rstrip(".")
     if isinstance(v, (int, float)):
         return f"{v:,}"
@@ -71,7 +73,7 @@ def params_md() -> str:
            "the source before relying on it; `placeholder` = example value only.", "",
            "| Key | Value | Description | Source | Verified on | Status |", "|---|---|---|---|---|---|"]
     for k, e in P.PARAMS.items():
-        out.append(f"| `{k}` | {_val(e['value'])} | {e['desc']} | {e['source']} | {e['verified_on']} | {e['status']} |")
+        out.append(f"| `{k}` | {_val(e['value'], e['unit'])} | {e['desc']} | {e['source']} | {e['verified_on']} | {e['status']} |")
     return "\n".join(out) + "\n"
 
 
@@ -159,8 +161,12 @@ def package(skill_dir: Path) -> list:
         with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
             for f in sorted(skill_dir.rglob("*")):
                 rel = f.relative_to(skill_dir.parent)
-                if f.is_dir() or "__pycache__" in rel.parts or f.suffix == ".pyc" or f.name == ".DS_Store" \
-                        or (len(rel.parts) > 1 and rel.parts[1] == "evals"):
+                inner = rel.parts[1:]
+                # explicit allow-list: SKILL.md plus source/text files under references/, scripts/, assets/
+                allowed = inner == ("SKILL.md",) or (
+                    len(inner) > 1 and inner[0] in ("references", "scripts", "assets")
+                    and f.suffix in (".md", ".py", ".json", ".txt"))
+                if f.is_dir() or not allowed or any(p.startswith(".") or p == "__pycache__" for p in inner):
                     continue
                 zi = zipfile.ZipInfo(str(rel).replace("\\", "/"), date_time=(2026, 1, 1, 0, 0, 0))
                 zi.compress_type = zipfile.ZIP_DEFLATED
@@ -201,6 +207,8 @@ def main():
     if a.check:
         print("skills are valid and up to date")
         return
+    for stale_file in DIST.glob("*"):         # never upload leftovers from an earlier build
+        stale_file.unlink()
     for d in sorted(SKILLS.iterdir()):
         if not d.is_dir():
             continue

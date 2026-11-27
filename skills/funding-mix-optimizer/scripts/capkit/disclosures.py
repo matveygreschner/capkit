@@ -13,9 +13,8 @@ Rules implemented (text verified on law.cornell.edu, 2026-11-26):
   number of months with the highest sales in the past twelve.
 * Estimated payments, term and APR follow from that projection, accounting for specified payment
   amounts, split-rate changes and contractual minimums (10 CCR 942; 23 NYCRR 600.7).
-* Tolerance: New York - 1/8 point, 1/4 point if irregular, or a percentage difference of 2.5% or
-  less (23 NYCRR 600.4). California's subchapter has no separate tolerance provision that CapKit
-  located; it reports the Reg Z 1/8-point figure for reference and labels it as such.
+* Tolerance: 1/8 point, 1/4 point if irregular, or a signed percentage difference (determined -
+  disclosed) / disclosed of 2.5% or less (CA 10 CCR 955(a); NY 23 NYCRR 600.4(a)).
 * Coverage: CA offers of $500,000 or less (Fin. Code 22800(n)); NY offers of $2,500,000 or less
   (23 NYCRR 600.19).
 
@@ -25,13 +24,13 @@ twelve months after funding on the Federal Reserve calendar.
 """
 from __future__ import annotations
 
+import math
 from datetime import timedelta
 from typing import List, Optional, Sequence
 
 from . import apr as A
 from . import params as P
-from .calendar import add_months, is_business_day, parse
-from .products import mca_split
+from .calendar import add_months, business_days_after, is_business_day, parse
 
 STATES = ("CA", "NY")
 
@@ -41,20 +40,26 @@ def historical_average(monthly_sales: Sequence[float], window: int, state: str =
     """Average monthly sales under the historical method.
 
     ``monthly_sales`` is oldest-to-newest. ``window`` must be 4-12 months (a business with a shorter
-    history may use the months it has). ``exclude`` = indexes the provider excludes (non-recurring
-    events, undocumented months). NY ``method="highest"`` averages the ``window`` highest months
-    within the last twelve."""
-    sales = [s for k, s in enumerate(monthly_sales) if k not in set(exclude)]
+    history may use the months it has). ``exclude`` = indexes (into ``monthly_sales``) the provider
+    excludes inside the window (non-recurring events, undocumented months); the window does NOT reach
+    back to replace them. NY ``method="highest"`` averages the ``window`` highest months within the last
+    twelve."""
+    sales = list(monthly_sales)
+    if not sales or any(x < 0 for x in sales):
+        raise ValueError("monthly_sales must be a non-empty list of zero or positive amounts")
     if not 4 <= window <= 12 and len(sales) >= 4:
         raise ValueError("the historical window must be 4 to 12 months (10 CCR 930; 23 NYCRR 600.8)")
-    if len(sales) < window:
-        window = len(sales)
+    window = min(window, len(sales))
+    drop = set(exclude)
     if method == "highest":
         if state != "NY":
             raise ValueError("the highest-months option is New York's (23 NYCRR 600.8)")
-        pick = sorted(sales[-12:], reverse=True)[:window]
+        last12 = [(k, x) for k, x in enumerate(sales) if k >= len(sales) - 12 and k not in drop]
+        pick = sorted((x for _, x in last12), reverse=True)[:window]
     else:
-        pick = sales[-window:]
+        pick = [x for k, x in enumerate(sales) if k >= len(sales) - window and k not in drop]
+    if not pick:
+        raise ValueError("every month in the window is excluded")
     return sum(pick) / len(pick)
 
 
@@ -71,63 +76,147 @@ def periods_per_year(frequency: str, funding_date, holidays="frb") -> int:
     return {"day": 365, "week": 52, "biweek": 26, "month": 12}[frequency]
 
 
+def _months_since(fd, d) -> int:
+    """Whole contract months elapsed from the funding date (month 1 = the first month after funding)."""
+    k = 0
+    while add_months(fd, k + 1) <= d:
+        k += 1
+    return k + 1
+
+
 def estimate(funding_provided: float, total_owed: float, split_rate: float, avg_monthly_sales: float,
              frequency: str = "business_day", funding_date="2027-01-04", prepaid_fees: float = 0.0,
-             minimum_payment: float = 0.0, holidays="frb", state: str = "CA") -> dict:
-    """Estimated disclosure figures for a sales-based financing under the historical method."""
+             minimum_payment: float = 0.0, holidays="frb", state: str = "CA", paid_on_behalf: float = 0.0,
+             split_schedule=None) -> dict:
+    """Estimated disclosure figures for a sales-based financing under the historical method.
+
+    ``funding_provided`` = cash to the recipient; ``paid_on_behalf`` = amounts paid to others for the
+    recipient (e.g. paying off a prior advance). Both are part of the amount financed, which is what
+    the coverage threshold and the APR use. ``split_schedule`` = [[from_month, rate], ...] for a split
+    that changes over time (month 1 = the first month after funding); otherwise ``split_rate`` applies
+    throughout."""
     if state not in STATES:
         raise ValueError(f"state must be one of {STATES}")
+    for name, v in (("funding_provided", funding_provided), ("total_owed", total_owed),
+                    ("avg_monthly_sales", avg_monthly_sales)):
+        if not (isinstance(v, (int, float)) and math.isfinite(v) and v > 0):
+            raise ValueError(f"{name} must be a positive number")
+    if not all(math.isfinite(v) and v >= 0 for v in (prepaid_fees, minimum_payment, paid_on_behalf)):
+        raise ValueError("fees, minimum payment and amounts paid on behalf must be zero or positive")
+    steps = sorted((int(m), float(r)) for m, r in (split_schedule or [[1, split_rate]]))
+    if steps[0][0] != 1:
+        steps = [(1, float(split_rate))] + steps
+    if any(not (0 < r <= 1) for _, r in steps):
+        raise ValueError("split rates must be between 0 and 1")
+    amount_financed = funding_provided + paid_on_behalf
+    if total_owed <= amount_financed:
+        raise ValueError("total owed must exceed the amount financed")
     limit = P.param("ca_cfdl_max_amount" if state == "CA" else "ny_cfdl_max_amount")
     n = periods_per_year(frequency, funding_date, holidays)
-    per = max(split_rate * avg_monthly_sales * 12 / n, minimum_payment)
-    advance = funding_provided + prepaid_fees            # face amount the factor applies to
-    s = mca_split(advance, total_owed / advance, 1.0, [per], frequency, funding_date, prepaid_fees, holidays)
-    pays = [f for f in s.flows if f.amount < 0]
-    first, last = s.flows[0].when, pays[-1].when
+    fd = parse(funding_date)
+    rate_for = lambda m: [r for start, r in steps if start <= m][-1]
+    flows, owed, k = [A.Flow(fd, amount_financed)], total_owed, 0
+    d = fd
+    pays = []
+    while owed > 1e-9:
+        k += 1
+        if k > 20_000:
+            raise ValueError("the estimated payments do not repay the amount owed; check the split and sales")
+        d = business_days_after(d, 1, holidays)[0] if frequency == "business_day" else \
+            (add_months(fd, k) if frequency == "month" else fd + timedelta(k * {"day": 1, "week": 7, "biweek": 14}[frequency]))
+        per = max(rate_for(_months_since(fd, d)) * avg_monthly_sales * 12 / n, minimum_payment)
+        amt = min(per, owed)
+        flows.append(A.Flow(d, -amt))
+        pays.append(amt)
+        owed -= amt
+    unit = {"business_day": "day", "day": "day", "week": "week", "biweek": "biweek", "month": "month"}[frequency]
+    first, last = flows[0].when, flows[-1].when
     term_days = (last - first).days
-    total_pay = -sum(f.amount for f in pays)
-    apr_a = A.apr_actuarial(s.flows, s.unit)
-    apr_u = A.apr_us_rule(s.flows, s.unit)
+    total_pay = sum(pays)
+    apr_a = A.apr_actuarial(flows, unit)
+    apr_u = A.apr_us_rule(flows, unit)
+    irregular = len({round(x, 6) for x in pays[:-1]}) > 1      # payment amounts change (not just the last)
     out = {
         "state": state,
-        "covered": funding_provided <= limit,
+        "covered": amount_financed <= limit,
         "coverage_limit": limit,
+        "coverage_basis": "amount financed (funding provided + amounts paid on the recipient's behalf); "
+                          "check the exemptions too (Cal. Fin. Code 22801; 23 NYCRR 600.19)",
         "funding_provided": round(funding_provided, 2),
+        "paid_on_behalf": round(paid_on_behalf, 2),
+        "amount_financed": round(amount_financed, 2),
         "estimated_apr_actuarial": apr_a,
         "estimated_apr_us_rule": apr_u,
-        "finance_charge": round(total_pay - funding_provided, 2),
+        "irregular": irregular,
+        "finance_charge": round(total_pay - amount_financed, 2),
         "estimated_total_payment_amount": round(total_pay, 2),
-        "estimated_payment": round(per, 2),
+        "estimated_payment": round(sum(pays) / len(pays), 2),
+        "first_payment": round(pays[0], 2),
         "payment_frequency": frequency,
         "number_of_payments": len(pays),
         "estimated_term_days": term_days,
         "estimated_term_months": round(term_days / 30.4, 1),
         "estimated_monthly_cost": round(total_pay / (term_days / 30.4), 2) if frequency != "month" else None,
         "assumed_average_monthly_sales": round(avg_monthly_sales, 2),
-        "unit_period": s.unit,
+        "split_schedule": [[m, r] for m, r in steps],
+        "unit_period": unit,
         "last_payment_date": last.isoformat(),
-        "sources": ["10 CCR 930, 940, 942, 914" if state == "CA" else "23 NYCRR 600.3, 600.6-600.8"],
-        "caveat": "Educational reproduction of the estimate math; not a compliance certification.",
+        "modeled": ["split rate (or stepped split schedule)", "contractual minimum debit", "prepaid fees",
+                    "amounts paid on the recipient's behalf", "Federal Reserve business-day calendar"],
+        "not_modeled": list(NOT_MODELED_ESTIMATE),
+        "sources": ["10 CCR 930, 940, 942, 914, 955" if state == "CA" else "23 NYCRR 600.3, 600.4, 600.6-600.8"],
+        "caveat": "Educational reproduction of the estimate math under the inputs given; not a compliance "
+                  "certification. A result is only as complete as the contract features entered.",
     }
     return out
 
 
-def check_disclosed_apr(disclosed_apr: float, computed: dict, state: str = "CA", irregular: bool = False) -> dict:
-    """Is a disclosed (estimated) APR consistent with either permitted Appendix J method?"""
+NOT_MODELED_ESTIMATE = ("true-ups / reconciliations", "payments triggered when sales fall below a threshold",
+                        "fees or charges not entered as prepaid fees", "a different payment calendar than the "
+                        "Federal Reserve business-day calendar")
+
+
+NOT_MODELED = ("true-ups / reconciliations", "stepped or changing split rates",
+               "payments triggered when sales fall below a threshold", "fees outside the finance charge entered here",
+               "a different sales history, averaging window or excluded months", "a different payment calendar")
+
+
+def check_disclosed_apr(disclosed_apr: float, computed: dict, state: str = "CA", irregular=None) -> dict:
+    """Is a disclosed (estimated) APR reproduced by either permitted Appendix J method?
+
+    A match means the disclosed figure is consistent with the inputs given. No match does NOT prove the
+    disclosure is wrong: the contract may have features this estimate does not model (listed in
+    ``not_modeled``), or the provider may have used different sales data."""
+    if not (isinstance(disclosed_apr, (int, float)) and math.isfinite(disclosed_apr)) or disclosed_apr < 0:
+        raise ValueError("disclosed_apr must be a finite, non-negative decimal (e.g. 0.6781 for 67.81%)")
+    if disclosed_apr > 20:
+        raise ValueError("disclosed_apr looks like a percentage; pass a decimal (0.6781, not 67.81)")
+    if irregular is None:
+        irregular = bool(computed.get("irregular", False))
     res = {}
     for method, key in (("actuarial", "estimated_apr_actuarial"), ("us_rule", "estimated_apr_us_rule")):
         v = computed[key]
         ok = A.within_tolerance(disclosed_apr, v, irregular)
-        if state == "NY" and not ok:
-            ok = abs((v - disclosed_apr) / disclosed_apr) * 100 <= 2.5 + 1e-12   # 23 NYCRR 600.4(c)
+        if not ok and disclosed_apr > 0:
+            # CA 10 CCR 955(a) and NY 23 NYCRR 600.4(a): percentage difference = (determined - disclosed)
+            # / disclosed x 100, accurate if 2.5 or less (signed, as written).
+            ok = (v - disclosed_apr) / disclosed_apr * 100 <= 2.5 + 1e-12
         res[method] = {"computed": v, "consistent": ok}
     matches = [m for m, r in res.items() if r["consistent"]]
     if matches:
         verdict = "consistent (" + " and ".join({"actuarial": "actuarial method",
                                                  "us_rule": "U.S. Rule method"}[m] for m in matches) + ")"
     else:
-        verdict = "inconsistent with both permitted methods"
-    tol_note = ("NY tolerance: 1/8 point (1/4 if irregular) or a 2.5% percentage difference (23 NYCRR 600.4)"
-                if state == "NY" else
-                "CA: compared at the Reg Z 1/8-point tolerance for reference; no separate CA tolerance located")
-    return {"disclosed": disclosed_apr, "methods": res, "verdict": verdict, "tolerance": tol_note}
+        verdict = "not reproduced by either permitted method with these inputs"
+    tol_note = (f"{'CA 10 CCR 955(a)' if state == 'CA' else 'NY 23 NYCRR 600.4(a)'}: accurate within 1/8 point "
+                f"(1/4 if irregular; this schedule was treated as {'irregular' if irregular else 'regular'}) "
+                "or a signed percentage difference (determined - disclosed) / disclosed of 2.5% or less")
+    out = {"disclosed": disclosed_apr, "methods": res, "verdict": verdict, "tolerance": tol_note,
+           "irregular": irregular,
+           "scope": "A match means the disclosed APR is consistent with the inputs and modeled features only "
+                    "(see 'modeled' and 'not_modeled' in the estimate). It is not a compliance certification."}
+    if not matches:
+        out["what_to_check"] = ("This is not proof the disclosure is wrong. Before concluding anything, check "
+                                "whether the contract has features this estimate does not model.")
+        out["not_modeled"] = list(NOT_MODELED)
+    return out

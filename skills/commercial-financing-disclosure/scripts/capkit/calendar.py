@@ -42,18 +42,26 @@ def frb_holidays(year: int) -> frozenset:
     return frozenset(out)
 
 
+def _holiday_set(holidays):
+    if holidays in ("frb", None, False) or isinstance(holidays, (set, frozenset)) and all(
+            isinstance(h, date) for h in holidays):
+        return holidays
+    return frozenset(parse(h) for h in holidays)      # accept ISO strings as well as dates
+
+
 def is_business_day(d: date, holidays="frb") -> bool:
     if d.weekday() >= 5:
         return False
     if holidays == "frb":
         return d not in frb_holidays(d.year)
     if holidays:
-        return d not in holidays
+        return d not in _holiday_set(holidays)
     return True
 
 
 def business_days_after(start: date, n: int, holidays="frb") -> list:
     """The next ``n`` business days strictly after ``start``."""
+    holidays = _holiday_set(holidays)
     out, d = [], start
     while len(out) < n:
         d += timedelta(1)

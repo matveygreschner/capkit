@@ -66,11 +66,22 @@ PARAMS = {
         "desc": "Additional upfront fee ceiling on the part of the guaranteed portion above $1,000,000",
         "source": "15 U.S.C. 636(a)(18)(A)(iv)", "verified_on": "2026-11-26", "status": "verify"},
     "sba_fee_fy": {
-        "value": {2026: [(150_000, 0.02), (700_000, 0.03), (5_000_000, 0.035)]}, "unit": "share of guaranteed portion",
-        "desc": "Fiscal-year upfront guaranty fee rates actually charged (can be below the ceiling, "
-                "including 0% in some years). Placeholder = statutory levels; confirm against the FY notice",
-        "source": "SBA 7(a) fiscal-year fee notice (Federal Register / SBA Information Notice)",
-        "verified_on": "2026-11-26", "status": "verify"},
+        "value": {
+            2026: {"short_term": 0.0025, "tiers": [(150_000, 0.02), (700_000, 0.03), (5_000_000, 0.035)],
+                   "over_1m_guaranteed": 0.0375, "zero_fee_max": 950_000,
+                   "zero_fee_who": "manufacturers (NAICS 31-33), not MARC loans"},
+            2027: {"short_term": 0.0025, "tiers": [(150_000, 0.02), (700_000, 0.03), (5_000_000, 0.035)],
+                   "over_1m_guaranteed": 0.0375, "zero_fee_max": 700_000,
+                   "zero_fee_who": "manufacturers (NAICS 31-33), listed food-supply-chain NAICS codes, "
+                                   "and businesses located in a rural area"},
+        },
+        "unit": "share of guaranteed portion",
+        "desc": "Upfront guaranty fee by fiscal year (Oct 1 - Sep 30), on the guaranteed portion: 0.25% for "
+                "maturities of 12 months or less; otherwise 2% (<= $150,000), 3% ($150,001-$700,000), 3.5% up to "
+                "$1,000,000 guaranteed plus 3.75% above ($700,001-$5,000,000); 0% for eligible borrowers up to "
+                "the zero-fee maximum. Two or more loans to one applicant within 90 days count as one loan",
+        "source": "SBA Information Notice 5000-872051 (FY2026) and 5000-881797 (FY2027, effective Oct 1, 2026)",
+        "verified_on": "2026-11-27", "status": "verified"},
     "sba_max_spread": {
         "value": [(50_000, 0.065), (250_000, 0.060), (350_000, 0.045), (float("inf"), 0.030)],
         "unit": "over Prime",
@@ -96,9 +107,23 @@ def age_days(key: str, today: date | None = None) -> int:
     return (today - date.fromisoformat(PARAMS[key]["verified_on"])).days
 
 
+def fiscal_year(d) -> int:
+    """Federal fiscal year (FY2027 = Oct 1, 2026 - Sep 30, 2027)."""
+    return d.year + 1 if d.month >= 10 else d.year
+
+
+def _fee_table(fy: int) -> dict:
+    table = PARAMS["sba_fee_fy"]["value"]
+    if fy not in table:
+        raise ValueError(f"SBA 7(a) fees for FY{fy} are not loaded; pass the fee rate from the SBA "
+                         f"fiscal-year fee notice (fee_rate=...). Loaded years: {sorted(table)}")
+    return table[fy]
+
+
 def sba_fee_rate(amount: float, fy: int = 2026) -> float:
-    """Upfront guaranty fee as a share of the *guaranteed portion* for a loan of ``amount``."""
-    for bound, rate in PARAMS["sba_fee_fy"]["value"][fy]:
+    """Long-term upfront fee rate on the guaranteed portion for the size tier of ``amount`` (the
+    3.75% rate on guaranteed amounts above $1,000,000 is applied by :func:`sba_upfront_fee`)."""
+    for bound, rate in _fee_table(fy)["tiers"]:
         if amount <= bound:
             return rate
     raise ValueError("SBA 7(a) loans are capped at $5,000,000")
@@ -115,15 +140,74 @@ def sba_fee_ceiling(amount: float) -> float:
     return g * rate + max(0.0, g - 1_000_000) * param("sba_fee_ceiling_extra_over_1m")
 
 
-def sba_upfront_fee(amount: float, fy: int = 2026, rate: float | None = None) -> float:
-    """Upfront guaranty fee in dollars: rate x guaranteed portion (NOT x face amount).
+# Working capital programs: upfront fee by maturity, on the guaranteed portion (FY2026 and FY2027 notices)
+WCP_RATES = [(12, 0.0025), (24, 0.00525), (36, 0.0080), (48, 0.01075), (60, 0.0135)]
+PROGRAMS = ("standard", "express_veteran", "ewcp", "wcp")
 
-    ``rate`` overrides the fiscal-year table. Raises if the fee would exceed the statutory ceiling."""
-    r = sba_fee_rate(amount, fy) if rate is None else rate
-    fee = r * sba_guaranty_share(amount) * amount
-    if fee > sba_fee_ceiling(amount) + 1e-9:
+
+def _standard_fee(amount: float, fy: int, months, zero_fee_eligible: bool) -> float:
+    g = sba_guaranty_share(amount) * amount
+    t = _fee_table(fy)
+    if zero_fee_eligible and amount <= t["zero_fee_max"]:
+        return 0.0
+    if months is not None and months <= 12:
+        return t["short_term"] * g
+    if amount <= 700_000:
+        return sba_fee_rate(amount, fy) * g
+    return 0.035 * min(g, 1_000_000) + t["over_1m_guaranteed"] * max(0.0, g - 1_000_000)
+
+
+def sba_upfront_fee(amount: float, fy: int = 2026, rate: float | None = None, months: int | None = None,
+                    zero_fee_eligible: bool = False, program: str = "standard",
+                    prior_90_day_amount: float = 0.0, prior_90_day_fee: float = 0.0) -> float:
+    """Upfront guaranty fee in dollars, on the *guaranteed portion* (never the face amount).
+
+    * ``fy`` is the fiscal year of the loan's APPROVAL (FY2027 = approved Oct 1, 2026 - Sep 30, 2027).
+    * ``months`` <= 12 uses the short-term rate. ``zero_fee_eligible`` applies the fiscal year's 0% tier
+      (who qualifies is in the parameter table). ``program``: "standard", "express_veteran" (SBA Express
+      to a veteran-owned business: $0), "ewcp" / "wcp" (rates by maturity).
+    * Loans to the same applicant (and affiliates) approved within 90 days count as one loan: pass the
+      earlier loans' total as ``prior_90_day_amount`` and the fee already charged as ``prior_90_day_fee``;
+      this loan's fee is the combined fee less the fee already charged.
+    * ``rate`` overrides the table (a share of the guaranteed portion, 0 to 1).
+    Raises if the fee would exceed the statutory ceiling or the fiscal year is not loaded."""
+    import math as _m
+    for name, v in (("amount", amount), ("prior_90_day_amount", prior_90_day_amount),
+                    ("prior_90_day_fee", prior_90_day_fee)):
+        if not (isinstance(v, (int, float)) and _m.isfinite(v)) or v < 0:
+            raise ValueError(f"{name} must be a finite, non-negative number")
+    if program not in PROGRAMS:
+        raise ValueError(f"program must be one of {PROGRAMS}")
+    if months is not None and months <= 0:
+        raise ValueError("months must be positive")
+    if rate is not None and not (0 <= rate <= 1):
+        raise ValueError("a fee rate override must be between 0 and 1 (a share of the guaranteed portion)")
+    total = amount + prior_90_day_amount
+    if amount <= 0 or total > 5_000_000:
+        raise ValueError("SBA 7(a) loan amounts are $0 to $5,000,000 (90-day combined)")
+    g = sba_guaranty_share(total) * amount
+    if rate is not None:
+        fee = rate * g
+    elif program == "express_veteran":
+        fee = 0.0
+    elif program in ("ewcp", "wcp"):
+        m = 12 if months is None else months
+        if program == "ewcp" and m > 36:
+            raise ValueError("EWCP fee rates in the notice cover maturities up to 36 months")
+        r = next((r for mm, r in WCP_RATES if m <= mm), None)
+        if r is None:
+            raise ValueError("WCP fee rates in the notice cover maturities up to 60 months")
+        fee = r * g
+    elif prior_90_day_amount:
+        fee = _standard_fee(total, fy, months, zero_fee_eligible) - prior_90_day_fee
+        fee = max(fee, 0.0)
+        g = sba_guaranty_share(total) * total
+    else:
+        fee = _standard_fee(amount, fy, months, zero_fee_eligible)
+    ceiling = sba_fee_ceiling(total) - (prior_90_day_fee if prior_90_day_amount else 0.0)
+    if fee > ceiling + 1e-9:
         raise ValueError(f"SBA upfront fee {fee:,.2f} exceeds the statutory ceiling "
-                         f"{sba_fee_ceiling(amount):,.2f} for a ${amount:,.0f} loan (15 U.S.C. 636(a)(18)(A))")
+                         f"{ceiling:,.2f} for a ${total:,.0f} loan (15 U.S.C. 636(a)(18)(A))")
     return fee
 
 
