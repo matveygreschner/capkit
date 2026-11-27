@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "capkit"
 version = "0.2.1"
-description = "Tested small-business financing engine: Regulation Z Appendix J APRs for every product, CA/NY disclosure math, and a mixed-integer funding-mix optimizer, with a formula-verified Excel / Google Sheets workbook and Claude skills"
+description = "Small-business financing cost engine: Regulation Z Appendix J APRs on actual dates, CA/NY disclosure math, a formula-verified workbook and Claude skills"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
