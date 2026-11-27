@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: evaluate-user-mix
+expected_outcome: |
+  Uses evaluate_mix to reject an infeasible user-proposed plan and explains which rules it breaks.

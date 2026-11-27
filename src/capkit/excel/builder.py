@@ -1,0 +1,502 @@
+"""Generate CapKit.xlsx: a formula-driven Excel / Google Sheets workbook generated from the engine.
+
+Portable formulas only (IRR, RATE, PMT, CEILING, WEEKDAY, COUNTIF, SUMPRODUCT, INDEX/MATCH, MIN/MAX,
+IF, AND/OR, EDATE). No XLOOKUP, LET, LAMBDA, dynamic arrays, tables, defined names or macros: the test
+suite fails the build if any appear. ``scripts/verify_workbook.py`` recalculates the file with an
+independent formula engine and compares it with the Python engine.
+
+The optimizer itself is not in the sheet (Excel Solver is not portable to Google Sheets). The
+``Mix_Evaluator`` sheet evaluates any plan you type with exactly the engine's rules and objective; it is
+pre-filled with CapKit's optimal bakery plan, and verification requires the sheet to reproduce the
+engine's objective for it.
+"""
+from __future__ import annotations
+
+import json
+import math
+from datetime import date, timedelta
+from pathlib import Path
+
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter as col
+from openpyxl.worksheet.datavalidation import DataValidation
+
+from .. import params as P
+from ..calendar import frb_holidays
+
+INPUT = PatternFill("solid", fgColor="FFF2CC")
+OUT = PatternFill("solid", fgColor="E2EFDA")
+HEAD = Font(bold=True)
+TITLE = Font(bold=True, size=14)
+PCT = "0.00%"
+USD = "$#,##0.00"
+
+DAILY_ROWS = 1100          # calendar days in the daily grids (covers ~3 years)
+PERIOD_ROWS = 400          # unit periods in the fixed-period grid
+
+
+class Cells:
+    """Records the address of every named cell for cells.json (used by the verifier)."""
+
+    def __init__(self):
+        self.map = {}
+
+    def put(self, ws, addr, value, name=None, fill=None, fmt=None, bold=False):
+        ws[addr] = value
+        if fill:
+            ws[addr].fill = fill
+        if fmt:
+            ws[addr].number_format = fmt
+        if bold:
+            ws[addr].font = HEAD
+        if name:
+            self.map.setdefault(ws.title, {})[name] = addr
+        return addr
+
+
+def _label_input(c, ws, row, label, value, name, fmt=None, note=None):
+    ws[f"A{row}"] = label
+    c.put(ws, f"B{row}", value, name, INPUT, fmt)
+    if note:
+        ws[f"C{row}"] = note
+
+
+def _label_out(c, ws, row, label, formula, name, fmt=None, note=None):
+    ws[f"A{row}"] = label
+    c.put(ws, f"B{row}", formula, name, OUT, fmt)
+    if note:
+        ws[f"C{row}"] = note
+
+
+def sheet_start(wb, c):
+    ws = wb.active
+    ws.title = "Start"
+    ws["A1"] = "CapKit: what does this money really cost, and which money should I take?"
+    ws["A1"].font = TITLE
+    lines = [
+        "Yellow cells are inputs; green cells are results. Every formula is portable to Google Sheets.",
+        "",
+        "APR - fixed-debit financing (e.g. a weekly MCA) on its unit-period grid: Reg Z Appendix J APR = IRR x periods per year.",
+        "Daily_MCA - a business-day MCA on the calendar-day grid (Appendix J's whole-period case), with the Federal Reserve holiday calendar.",
+        "Loans - term loan and SBA 7(a): payment, APR with fees (RATE), SBA fee on the guaranteed portion and its statutory ceiling.",
+        "EarlyPay_Factoring - cost of passing up 2/10 net 30, and invoice factoring cost.",
+        "Disclosure - California / New York estimated APR, term and payment for sales-based financing (historical method).",
+        "Mix_Evaluator - type any funding plan for the 13-week bakery forecast: every rule is checked and the terminal net position computed.",
+        "Params_Sources - every rate and limit with its legal source and verified-on date. Holidays - FRB holiday list.",
+        "",
+        "The optimizer (which plan is best) runs in the Python engine / Claude skill; the sheet evaluates any plan exactly.",
+        "Not legal, tax or financial advice. An MCA is usually a purchase of receivables, not a loan; its APR is a comparison measure.",
+    ]
+    for k, t in enumerate(lines, 3):
+        ws[f"A{k}"] = t
+    ws.column_dimensions["A"].width = 130
+
+
+def sheet_apr(wb, c):
+    ws = wb.create_sheet("APR")
+    ws["A1"] = "Fixed-debit financing on its unit-period grid (Appendix J general equation, whole periods)"
+    ws["A1"].font = TITLE
+    _label_input(c, ws, 3, "Advance (face)", 50000, "advance", USD)
+    _label_input(c, ws, 4, "Fees withheld at funding", 0, "fees", USD)
+    _label_input(c, ws, 5, "Factor rate (total owed / advance)", 1.35, "factor")
+    _label_input(c, ws, 6, "Debit per period", 2250, "payment", USD)
+    _label_input(c, ws, 7, "Unit periods per year (52 weekly, 26 biweekly, 12 monthly)", 52, "ppy")
+    _label_out(c, ws, 9, "Total owed (purchased amount)", "=B3*B5", "owed", USD)
+    _label_out(c, ws, 10, "Net proceeds", "=B3-B4", "net", USD)
+    _label_out(c, ws, 11, "Number of debits", "=CEILING(B9/B6-0.000000001,1)", "n")
+    _label_out(c, ws, 12, "Finance charge", "=B9-B10", "finance_charge", USD)
+    _label_out(c, ws, 13, "APR (Appendix J actuarial)", f"=IRR(F3:F{3 + PERIOD_ROWS},0.01)*B7", "apr", PCT)
+    _label_out(c, ws, 14, "Effective annual rate", f"=(1+IRR(F3:F{3 + PERIOD_ROWS},0.01))^B7-1", "ear", PCT)
+    _label_out(c, ws, 15, "Simple annualized quote (not an APR)", "=(B9-B10)/B10/(B11/B7)", "simple", PCT,
+               "what 'cost / term' calculators show")
+    ws["E2"], ws["F2"] = "Period", "Cash flow"
+    ws["E2"].font = ws["F2"].font = HEAD
+    for k in range(PERIOD_ROWS + 1):
+        r = 3 + k
+        ws[f"E{r}"] = k
+        ws[f"F{r}"] = "=B10" if k == 0 else f"=IF(E{r}<=$B$11,-MIN($B$6,$B$9-$B$6*(E{r}-1)),0)"
+    ws.column_dimensions["A"].width = 58
+    ws.column_dimensions["B"].width = 16
+
+
+def sheet_daily(wb, c):
+    ws = wb.create_sheet("Daily_MCA")
+    ws["A1"] = "Business-day MCA on the calendar-day grid: APR = IRR(daily flows) x 365"
+    ws["A1"].font = TITLE
+    _label_input(c, ws, 3, "Funding date", date(2027, 1, 4), "fund", "yyyy-mm-dd")
+    _label_input(c, ws, 4, "Advance (face)", 50000, "advance", USD)
+    _label_input(c, ws, 5, "Fees withheld", 0, "fees", USD)
+    _label_input(c, ws, 6, "Factor rate", 1.35, "factor")
+    _label_input(c, ws, 7, "Debit per business day", 450, "payment", USD)
+    _label_input(c, ws, 8, "Skip Federal Reserve holidays? (Y/N)", "Y", "use_holidays")
+    dv = DataValidation(type="list", formula1='"Y,N"', allow_blank=False)
+    ws.add_data_validation(dv)
+    dv.add("B8")
+    _label_out(c, ws, 10, "Total owed", "=B4*B6", "owed", USD)
+    _label_out(c, ws, 11, "Number of debits", "=CEILING(B10/B7-0.000000001,1)", "n")
+    _label_out(c, ws, 12, "Last debit date", f"=INDEX(F3:F{3 + DAILY_ROWS},MATCH(B11,H3:H{3 + DAILY_ROWS},0))",
+               "last", "yyyy-mm-dd")
+    _label_out(c, ws, 13, "APR (Appendix J, one-day unit period)", f"=IRR(I3:I{3 + DAILY_ROWS},0.001)*365", "apr", PCT)
+    _label_out(c, ws, 14, "Business-day rate x 252 (NOT an Appendix J figure)",
+               f"=IRR(J3:J{3 + DAILY_ROWS},0.001)*252", "bd252", PCT, "shown for contrast only")
+    for k, h in zip("EFGHIJ", ["Day", "Date", "Debit day?", "Debits so far", "Cash flow", "Business-day flow"]):
+        ws[f"{k}2"] = h
+        ws[f"{k}2"].font = HEAD
+    hol = f"Holidays!$A$2:$A${1 + len(_holiday_list())}"
+    for k in range(DAILY_ROWS + 1):
+        r = 3 + k
+        ws[f"E{r}"] = k
+        ws[f"F{r}"] = f"=$B$3+E{r}"
+        ws[f"F{r}"].number_format = "yyyy-mm-dd"
+        if k == 0:
+            ws[f"G{r}"] = 0
+            ws[f"H{r}"] = 0
+            ws[f"I{r}"] = "=B4-B5"
+            ws[f"J{r}"] = "=B4-B5"
+        else:
+            ws[f"G{r}"] = f'=IF(AND(WEEKDAY(F{r},2)<=5,OR($B$8="N",COUNTIF({hol},F{r})=0)),1,0)'
+            ws[f"H{r}"] = f"=H{r - 1}+G{r}"
+            ws[f"I{r}"] = f"=IF(AND(G{r}=1,H{r}<=$B$11),-MIN($B$7,$B$10-$B$7*(H{r}-1)),0)"
+    # business-day grid (each debit is one period): row k = k-th debit
+    for k in range(DAILY_ROWS + 1):
+        r = 3 + k
+        if k:
+            ws[f"J{r}"] = f"=IF(E{r}<=$B$11,-MIN($B$7,$B$10-$B$7*(E{r}-1)),0)"
+    ws.column_dimensions["A"].width = 52
+    ws.column_dimensions["B"].width = 16
+    ws.column_dimensions["F"].width = 12
+
+
+def sheet_loans(wb, c):
+    ws = wb.create_sheet("Loans")
+    ws["A1"] = "Term loan and SBA 7(a)"
+    ws["A1"].font = TITLE
+    _label_input(c, ws, 3, "Term loan amount", 50000, "tl_amount", USD)
+    _label_input(c, ws, 4, "Note rate (annual)", 0.15, "tl_rate", PCT)
+    _label_input(c, ws, 5, "Term (months)", 24, "tl_months")
+    _label_input(c, ws, 6, "Fee withheld", 1500, "tl_fee", USD)
+    _label_out(c, ws, 7, "Monthly payment", "=PMT(B4/12,B5,-B3)", "tl_payment", USD)
+    _label_out(c, ws, 8, "APR (Appendix J, monthly unit)", "=RATE(B5,-B7,B3-B6)*12", "tl_apr", PCT)
+    _label_out(c, ws, 9, "Finance charge", "=B7*B5-(B3-B6)", "tl_fc", USD)
+
+    ws["A11"] = "SBA 7(a) (variable rate held at today's Prime)"
+    ws["A11"].font = HEAD
+    _label_input(c, ws, 12, "Loan amount", 42548.02, "sba_amount", USD)
+    _label_input(c, ws, 13, "Prime rate", P.param("prime_rate"), "prime", PCT, "placeholder - update from FRED DPRIME")
+    _label_input(c, ws, 14, "Spread over Prime (blank = SOP 50 10 maximum)", None, "sba_spread_in", PCT)
+    _label_input(c, ws, 15, "Term (months)", 120, "sba_months")
+    _label_input(c, ws, 16, "FY fee rate on guaranteed portion (blank = FY table)", None, "sba_fee_in", PCT)
+    _label_out(c, ws, 17, "Maximum spread for this size", "=INDEX($F$4:$F$7,MATCH(B12,$E$4:$E$7,1))",
+               "sba_max_spread", PCT)
+    _label_out(c, ws, 18, "Rate", '=B13+IF(B14="",B17,B14)', "sba_rate", PCT)
+    _label_out(c, ws, 19, "Guaranty share", "=IF(B12<=150000,0.85,0.75)", "sba_share", PCT)
+    _label_out(c, ws, 20, "Fee rate on guaranteed portion",
+               '=IF(B16="",INDEX($I$4:$I$6,MATCH(B12,$H$4:$H$6,1)),B16)', "sba_fee_rate", PCT)
+    _label_out(c, ws, 21, "Upfront guaranty fee", "=B20*B19*B12", "sba_fee", USD)
+    _label_out(c, ws, 22, "Statutory fee ceiling",
+               "=B19*B12*INDEX($L$4:$L$6,MATCH(B12,$K$4:$K$6,1))+MAX(0,B19*B12-1000000)*0.0025",
+               "sba_ceiling", USD)
+    _label_out(c, ws, 23, "Fee within ceiling?", '=IF(B21<=B22+0.000001,"OK","ABOVE STATUTORY CEILING")', "sba_fee_ok")
+    _label_out(c, ws, 24, "Monthly payment", "=PMT(B18/12,B15,-B12)", "sba_payment", USD)
+    _label_out(c, ws, 25, "APR with fee (monthly unit)", "=RATE(B15,-B24,B12-B21)*12", "sba_apr", PCT)
+
+    ws["E3"], ws["F3"] = "Loan from ($)", "Max spread"
+    ws["H3"], ws["I3"] = "Loan from ($)", "FY fee rate"
+    ws["K3"], ws["L3"] = "Loan from ($)", "Fee ceiling"
+
+    def table(c1, c2, rows):
+        lo = 0.0
+        for k, (b, v) in enumerate(rows):
+            ws[f"{c1}{4 + k}"], ws[f"{c2}{4 + k}"] = lo, v       # applies from `lo` (exclusive of the
+            lo = round(b + 0.01, 2) if math.isfinite(b) else lo   # previous bound) up to this row's bound
+    table("E", "F", P.param("sba_max_spread"))
+    table("H", "I", P.param("sba_fee_fy")[2026])
+    table("K", "L", P.param("sba_fee_ceiling"))
+    ws["E9"] = "Sources: SOP 50 10 8; SBA FY fee notice; 15 U.S.C. 636(a)(18)(A). Verify each year."
+    ws.column_dimensions["A"].width = 50
+    ws.column_dimensions["B"].width = 16
+
+
+def sheet_earlypay(wb, c):
+    ws = wb.create_sheet("EarlyPay_Factoring")
+    ws["A1"] = "Supplier terms and invoice factoring"
+    ws["A1"].font = TITLE
+    _label_input(c, ws, 3, "Discount (e.g. 2%)", 0.02, "disc", PCT)
+    _label_input(c, ws, 4, "Discount days", 10, "dd")
+    _label_input(c, ws, 5, "Net days", 30, "nd")
+    _label_out(c, ws, 6, "Cost of forgoing the discount - nominal", "=B3/(1-B3)*365/(B5-B4)", "ep_nominal", PCT)
+    _label_out(c, ws, 7, "Cost of forgoing the discount - effective", "=(1+B3/(1-B3))^(365/(B5-B4))-1", "ep_effective", PCT)
+    _label_input(c, ws, 9, "Invoice face", 10000, "face", USD)
+    _label_input(c, ws, 10, "Advance rate", 0.8, "adv_rate", PCT)
+    _label_input(c, ws, 11, "Fee per 30 days (or part)", 0.03, "fee30", PCT)
+    _label_input(c, ws, 12, "Days until the customer pays", 45, "days")
+    _label_out(c, ws, 13, "Advance", "=B9*B10", "fac_adv", USD)
+    _label_out(c, ws, 14, "Fee", "=B11*B9*CEILING(B12/30,1)", "fac_fee", USD)
+    _label_out(c, ws, 15, "Rebate at collection", "=B9-B13-B14", "fac_rebate", USD)
+    _label_out(c, ws, 16, "APR (one-day unit)", "=((B13+B14)/B13)^(1/B12)*365-365", "fac_apr", PCT)
+    ws.column_dimensions["A"].width = 48
+    ws.column_dimensions["B"].width = 16
+
+
+def sheet_disclosure(wb, c):
+    ws = wb.create_sheet("Disclosure")
+    ws["A1"] = "CA / NY estimated APR for sales-based financing - historical method"
+    ws["A1"].font = TITLE
+    ws["A2"] = ("10 CCR 930/940/942 and 23 NYCRR 600.3/600.7/600.8. Monthly sales are spread evenly over the business "
+                "days in the 12 months after funding (CapKit's stated assumption). Not a compliance certification.")
+    _label_input(c, ws, 4, "Funding provided", 50000, "funding", USD)
+    _label_input(c, ws, 5, "Total amount owed", 67500, "owed", USD)
+    _label_input(c, ws, 6, "Prepaid fees", 0, "fees", USD)
+    _label_input(c, ws, 7, "Split rate (holdback)", 0.10, "split", PCT)
+    _label_input(c, ws, 8, "Averaging window (4-12 months)", 6, "window")
+    _label_input(c, ws, 9, "Funding date", date(2027, 1, 4), "fund", "yyyy-mm-dd")
+    _label_input(c, ws, 10, "Contractual minimum debit", 0, "minpay", USD)
+    _label_input(c, ws, 11, "Disclosed estimated APR (to check)", 0.68, "disclosed", PCT)
+    ws["E3"], ws["F3"] = "Month (oldest=1)", "Monthly sales"
+    sales = [60000, 58000, 62000, 61000, 59000, 60000, 57000, 63000, 61000, 60000, 59000, 61000]
+    for k in range(12):
+        ws[f"E{4 + k}"] = k + 1
+        c.put(ws, f"F{4 + k}", sales[k], f"sales{k + 1}", INPUT, USD)
+    _label_out(c, ws, 13, "Window valid?", '=IF(AND(B8>=4,B8<=12),"OK","window must be 4-12 months")', "window_ok")
+    _label_out(c, ws, 14, "Historical average monthly sales", "=SUMPRODUCT((E4:E15>12-B8)*F4:F15)/B8", "avg", USD)
+    hol = f"Holidays!$A$2:$A${1 + len(_holiday_list())}"
+    _label_out(c, ws, 15, "Business days in the 12 months after funding",
+               f"=SUMPRODUCT((I4:I{4 + DAILY_ROWS}>B9)*(I4:I{4 + DAILY_ROWS}<=EDATE(B9,12))*J4:J{4 + DAILY_ROWS})",
+               "nbd")
+    _label_out(c, ws, 16, "Estimated payment per business day", "=MAX(B7*B14*12/B15,B10)", "payment", USD)
+    _label_out(c, ws, 17, "Number of payments", "=CEILING(B5/B16-0.000000001,1)", "n")
+    _label_out(c, ws, 18, "Last payment date", f"=INDEX(I4:I{4 + DAILY_ROWS},MATCH(B17,K4:K{4 + DAILY_ROWS},0))",
+               "last", "yyyy-mm-dd")
+    _label_out(c, ws, 19, "Estimated term (days)", "=B18-B9", "term_days")
+    _label_out(c, ws, 20, "Estimated term (months, days / 30.4)", "=ROUND(B19/30.4,1)", "term_months")
+    _label_out(c, ws, 21, "Finance charge", "=B5-B4", "fc", USD)
+    _label_out(c, ws, 22, "Estimated monthly cost", "=B5/(B19/30.4)", "monthly_cost", USD)
+    _label_out(c, ws, 23, "Estimated APR (actuarial)", f"=IRR(L4:L{4 + DAILY_ROWS},0.001)*365", "apr", PCT)
+    _label_out(c, ws, 24, "Disclosed APR within 1/8 point of actuarial?", '=IF(ABS(B11-B23)<=0.00125,"yes","no")',
+               "check")
+    ws["A25"] = "The U.S. Rule figure (also permitted) is computed by the engine; see the disclosure skill."
+    for k, h in zip("HIJKL", ["Day", "Date", "Debit day?", "Debits so far", "Cash flow"]):
+        ws[f"{k}3"] = h
+        ws[f"{k}3"].font = HEAD
+    for k in range(DAILY_ROWS + 1):
+        r = 4 + k
+        ws[f"H{r}"] = k
+        ws[f"I{r}"] = f"=$B$9+H{r}"
+        ws[f"I{r}"].number_format = "yyyy-mm-dd"
+        if k == 0:
+            ws[f"J{r}"], ws[f"K{r}"], ws[f"L{r}"] = 0, 0, "=B4"
+        else:
+            ws[f"J{r}"] = f"=IF(AND(WEEKDAY(I{r},2)<=5,COUNTIF({hol},I{r})=0),1,0)"
+            ws[f"K{r}"] = f"=K{r - 1}+J{r}"
+            ws[f"L{r}"] = f"=IF(AND(J{r}=1,K{r}<=$B$17),-MIN($B$16,$B$5-$B$16*(K{r}-1)),0)"
+    ws.column_dimensions["A"].width = 50
+    ws.column_dimensions["B"].width = 16
+
+
+# ---------------------------------------------------------------- Mix_Evaluator (bakery-shaped)
+T = 13
+
+
+def sheet_mix(wb, c, scenario: dict, plan: dict):
+    ws = wb.create_sheet("Mix_Evaluator")
+    ws["A1"] = "Evaluate any funding plan: 13-week forecast, one MCA, one SBA 7(a) loan, a line of credit, 2/10 net 30 invoices"
+    ws["A1"].font = TITLE
+    ws["A2"] = ("Pre-filled with CapKit's optimal plan for examples/bakery.json. Change the yellow plan cells to test "
+                "your own mix: every rule is checked and the terminal net position uses the engine's objective.")
+    mca = next(o for o in scenario["offers"] if o["type"] == "mca")
+    sba = next(o for o in scenario["offers"] if o["type"] == "sba_7a")
+    inv = scenario["recurring_invoices"]
+    loc = scenario["line_of_credit"]
+    rows = [("Starting cash", scenario["starting_cash"], "B0", USD), ("Cash floor", scenario["cash_floor"], "floor", USD),
+            ("Weekly revenue", scenario["revenue"], "revenue", USD),
+            ("Affordability share of revenue", scenario["affordability_share"], "alpha", PCT),
+            ("Deposit rate on idle cash (annual)", scenario["deposit_rate"], "idep", PCT),
+            ("Post-horizon carry H (weeks: 0 or 52)", 0, "H", None),
+            ("LOC limit", loc["limit"], "loc_limit", USD), ("LOC rate (annual)", loc["annual_rate"], "loc_rate", PCT),
+            ("Invoice amount (received weekly)", inv["amount"], "inv_amt", USD),
+            ("Invoice discount", inv["discount"], "inv_disc", PCT),
+            ("MCA min", mca["min"], "mca_min", USD), ("MCA max", mca["max"], "mca_max", USD),
+            ("MCA factor rate", mca["factor_rate"], "mca_factor", None),
+            ("MCA weekly debit per advance dollar", mca["weekly_debit_per_dollar"], "mca_k", None),
+            ("MCA early-payoff discount", mca["payoff_discount"], "mca_pi", PCT),
+            ("SBA available from week", sba["weeks"][0], "sba_from", None),
+            ("SBA min", sba["min"], "sba_min", USD), ("SBA max", sba["max"], "sba_max", USD),
+            ("Prime rate", sba.get("prime", P.param("prime_rate")), "prime", PCT),
+            ("SBA term (months)", sba.get("months", 120), "sba_months", None)]
+    for k, (lab, v, name, fmt) in enumerate(rows, 4):
+        _label_input(c, ws, k, lab, v, name, fmt)
+    r0 = 4 + len(rows) + 1     # plan inputs
+    ws[f"A{r0}"] = "PLAN (inputs)"
+    ws[f"A{r0}"].font = HEAD
+    f = {x["offer"].split(" tier")[0]: x for x in plan["fundings"]}
+    m, s = f.get("MCA", {}), f.get("SBA 7(a)", {})
+    _label_input(c, ws, r0 + 1, "MCA amount (0 = none)", round(m.get("amount", 0), 6), "x_mca", USD)
+    _label_input(c, ws, r0 + 2, "MCA funding week", m.get("week", 1), "s_mca")
+    _label_input(c, ws, r0 + 3, "MCA prepay week (0 = not prepaid)", m.get("prepay_week") or 0, "u_mca")
+    _label_input(c, ws, r0 + 4, "SBA amount (0 = none)", round(s.get("amount", 0), 6), "x_sba", USD)
+    _label_input(c, ws, r0 + 5, "SBA funding week", s.get("week", sba["weeks"][0]), "s_sba")
+    r1 = r0 + 7                # derived offer terms
+    B = lambda name: c.map["Mix_Evaluator"][name].replace("B", "$B$")
+    _label_out(c, ws, r1, "SBA rate (Prime + SOP max spread for the size)",
+               f"={B('prime')}+INDEX(Loans!$F$4:$F$7,MATCH({B('x_sba')},Loans!$E$4:$E$7,1))",
+               "sba_rate", PCT)
+    _label_out(c, ws, r1 + 1, "SBA fee share of face (FY rate x guaranty share)",
+               f"=INDEX(Loans!$I$4:$I$6,MATCH({B('x_sba')},Loans!$H$4:$H$6,1))"
+               f"*IF({B('x_sba')}<=150000,0.85,0.75)", "sba_fee_share", PCT)
+    _label_out(c, ws, r1 + 2, "SBA monthly payment",
+               f"=IF({B('x_sba')}>0,PMT({B('sba_rate')}/12,{B('sba_months')},-{B('x_sba')}),0)", "sba_pmt", USD)
+    # due-week helper: payment m falls ceil(m*52/12) weeks after funding
+    ws[f"E{r1 - 1}"] = "SBA payment m"
+    ws[f"F{r1 - 1}"] = "weeks after funding"
+    for k in range(1, 5):
+        ws[f"E{r1 - 1 + k}"] = k
+        ws[f"F{r1 - 1 + k}"] = f"=CEILING(E{r1 - 1 + k}*52/12-0.000000001,1)"
+    due = f"$F${r1}:$F${r1 + 3}"
+    # weekly table
+    hr = r1 + 5
+    heads = ["Week", "Operating cash flow", "Funding in", "MCA debit", "MCA prepayment", "SBA payment",
+             "Early-pay share (invoice of this week)", "Invoices paid", "LOC balance (input)", "LOC interest",
+             "Cash", "Floor ok?", "Afford ok?", "MCA owed after week"]
+    for k, h in enumerate(heads):
+        cc = ws.cell(row=hr, column=1 + k, value=h)
+        cc.font = HEAD
+        cc.alignment = Alignment(wrap_text=True)
+    ep = plan.get("early_pay") or {}
+    lb = plan.get("loc_balance") or [0] * T
+    first = hr + 1
+    cash_prev = B("B0")
+    for t in range(1, T + 1):
+        r = hr + t
+        A_ = f"A{r}"
+        ws[A_] = t
+        c.put(ws, f"B{r}", scenario["operating_cash_flow"][t - 1], f"c{t}", INPUT, USD)
+        ws[f"C{r}"] = (f"=IF(AND({B('x_mca')}>0,{B('s_mca')}=A{r}),{B('x_mca')},0)"
+                       f"+IF(AND({B('x_sba')}>0,{B('s_sba')}=A{r}),{B('x_sba')}*(1-{B('sba_fee_share')}),0)")
+        ws[f"D{r}"] = (f"=IF(AND({B('x_mca')}>0,A{r}>{B('s_mca')},OR({B('u_mca')}=0,A{r}<={B('u_mca')})),"
+                       f"MIN({B('mca_k')}*{B('x_mca')},MAX(0,{B('mca_factor')}*{B('x_mca')}-{B('mca_k')}*{B('x_mca')}*(A{r}-{B('s_mca')}-1))),0)")
+        ws[f"E{r}"] = (f"=IF(AND({B('x_mca')}>0,{B('u_mca')}=A{r}),(1-{B('mca_pi')})*"
+                       f"MAX(0,{B('mca_factor')}*{B('x_mca')}-{B('mca_k')}*{B('x_mca')}*(A{r}-{B('s_mca')})),0)")
+        ws[f"F{r}"] = f"=IF(AND({B('x_sba')}>0,A{r}>{B('s_sba')}),{B('sba_pmt')}*COUNTIF({due},A{r}-{B('s_sba')}),0)"
+        c.put(ws, f"G{r}", ep.get(t - 1, 0.0) if t < T else 0, f"e{t}", INPUT)
+        # invoice received week w: early share e_w paid in week w+1 at (1-d); else paid in week w+4
+        early = f"IF(A{r}>1,INDEX($G${first}:$G${first + T - 1},A{r}-1),0)"
+        net = f"IF(A{r}>4,1-INDEX($G${first}:$G${first + T - 1},A{r}-4),0)"
+        ws[f"H{r}"] = f"=(1-{B('inv_disc')})*{B('inv_amt')}*{early}+{B('inv_amt')}*{net}"
+        c.put(ws, f"I{r}", round(lb[t - 1], 6), f"b{t}", INPUT, USD)
+        prev_b = "0" if t == 1 else f"I{r - 1}"
+        ws[f"J{r}"] = f"={B('loc_rate')}/52*{prev_b}"
+        ws[f"K{r}"] = (f"=(1+{B('idep')}/52)*{cash_prev}+B{r}+C{r}-D{r}-E{r}-F{r}-H{r}+(I{r}-{prev_b})-J{r}")
+        ws[f"L{r}"] = f'=IF(K{r}>={B("floor")}-0.005,"ok","BELOW FLOOR")'
+        ws[f"M{r}"] = f'=IF(D{r}+F{r}+J{r}<={B("alpha")}*{B("revenue")}+0.005,"ok","OVER")'
+        ws[f"N{r}"] = (f"=IF(AND({B('x_mca')}>0,A{r}>={B('s_mca')},{B('u_mca')}=0),MAX(0,{B('mca_factor')}*{B('x_mca')}"
+                       f"-{B('mca_k')}*{B('x_mca')}*(A{r}-{B('s_mca')})),0)")
+        for col_ in "BCDEFHIJK":
+            ws[f"{col_}{r}"].number_format = USD
+        c.map["Mix_Evaluator"][f"cash{t}"] = f"K{r}"
+        cash_prev = f"K{r}"
+    last = hr + T
+    rs = last + 2
+    k_due = f"COUNTIF({due},\"<=\"&({T}-{B('s_sba')}))"
+    _label_out(c, ws, rs, "SBA payments made by week 13", f"=IF({B('x_sba')}>0,{k_due},0)", "sba_k")
+    _label_out(c, ws, rs + 1, "SBA payoff value at week 13",
+               f"=IF({B('x_sba')}>0,({B('x_sba')}*(1+{B('sba_rate')}/12)^B{rs}-{B('sba_pmt')}*((1+{B('sba_rate')}/12)^B{rs}-1)"
+               f"/({B('sba_rate')}/12))*(1+{B('sba_rate')}/52*(({T}-{B('s_sba')})-B{rs}*52/12)),0)", "sba_payoff", USD)
+    _label_out(c, ws, rs + 2, "Invoices still owed after week 13",
+               f"={B('inv_amt')}*(4-SUMPRODUCT((A{first}:A{last}>=10)*(A{first}:A{last}<=12)*G{first}:G{last}))",
+               "inv_open", USD)
+    _label_out(c, ws, rs + 3, "Terminal net position",
+               f"=(1+{B('idep')}/52*{B('H')})*K{last}-(1+{B('loc_rate')}/52*{B('H')})*I{last}-N{last}"
+               f"-B{rs + 1}*(1+{B('sba_rate')}/52*{B('H')})-B{rs + 2}", "terminal", USD)
+    _label_out(c, ws, rs + 4, "Plan feasible?",
+               f'=IF(AND(COUNTIF(L{first}:L{last},"ok")={T},COUNTIF(M{first}:M{last},"ok")={T},'
+               f"OR({B('x_mca')}=0,AND({B('x_mca')}>={B('mca_min')},{B('x_mca')}<={B('mca_max')})),"
+               f"OR({B('x_sba')}=0,AND({B('x_sba')}>={B('sba_min')},{B('x_sba')}<={B('sba_max')},{B('s_sba')}>={B('sba_from')})),"
+               f"OR({B('u_mca')}=0,{B('u_mca')}>{B('s_mca')}),"
+               f'MIN(I{first}:I{last})>=0,MAX(I{first}:I{last})<={B("loc_limit")}+0.005),"FEASIBLE","NOT FEASIBLE")',
+               "feasible")
+    ws[f"A{rs + 5}"] = "Engine's optimal terminal net position for this scenario (H=0), for comparison:"
+    c.put(ws, f"B{rs + 5}", None, "engine_terminal", None, USD)
+    ws.column_dimensions["A"].width = 46
+    for k in range(2, 15):
+        ws.column_dimensions[col(k)].width = 14
+
+
+def _holiday_list():
+    out = []
+    for y in range(2025, 2031):
+        out += sorted(frb_holidays(y))
+    return out
+
+
+def sheet_params(wb, c):
+    ws = wb.create_sheet("Params_Sources")
+    heads = ["Key", "Value", "Unit", "Description", "Source", "Verified on", "Status"]
+    for k, h in enumerate(heads, 1):
+        ws.cell(row=1, column=k, value=h).font = HEAD
+    for r, (key, e) in enumerate(P.PARAMS.items(), 2):
+        v = e["value"]
+        ws.cell(row=r, column=1, value=key)
+        ws.cell(row=r, column=2, value=v if isinstance(v, (int, float)) else json.dumps(v, default=str))
+        ws.cell(row=r, column=3, value=e["unit"])
+        ws.cell(row=r, column=4, value=e["desc"])
+        ws.cell(row=r, column=5, value=e["source"])
+        ws.cell(row=r, column=6, value=e["verified_on"])
+        ws.cell(row=r, column=7, value=e["status"])
+    for k, w in zip("ABCDEFG", (28, 30, 22, 80, 50, 12, 12)):
+        ws.column_dimensions[k].width = w
+    hs = wb.create_sheet("Holidays")
+    hs["A1"] = "Federal Reserve holidays (Sunday -> Monday; Saturday holidays not observed)"
+    hs["A1"].font = HEAD
+    for r, d in enumerate(_holiday_list(), 2):
+        hs[f"A{r}"] = d
+        hs[f"A{r}"].number_format = "yyyy-mm-dd"
+
+
+def build_workbook(path="workbook/CapKit.xlsx", cells_path=None, scenario=None, plan=None, engine_terminal=None):
+    """Write the workbook (and a cells.json map of named cells). ``plan`` defaults to the engine's
+    optimal bakery plan when scipy is available, else a simple LOC-only plan."""
+    root = Path(__file__).resolve().parents[3]
+    if scenario is None:
+        here = root / "examples" / "bakery.json"
+        if not here.exists():   # vendored inside a skill: <skill>/assets/bakery.json
+            here = root / "assets" / "bakery.json"
+        scenario = json.loads(here.read_text()) if here.exists() else _BAKERY
+    if plan is None:
+        try:
+            from ..optimize.report import optimize
+            r = optimize(scenario)
+            plan, engine_terminal = r["plan"], r["objective"]
+        except Exception:
+            plan = {"fundings": [], "loc_balance": [0] * T, "early_pay": {}}
+    c = Cells()
+    wb = Workbook()
+    sheet_start(wb, c)
+    sheet_apr(wb, c)
+    sheet_daily(wb, c)
+    sheet_loans(wb, c)
+    sheet_earlypay(wb, c)
+    sheet_disclosure(wb, c)
+    sheet_mix(wb, c, scenario, plan)
+    if engine_terminal is not None:
+        wb["Mix_Evaluator"][c.map["Mix_Evaluator"]["engine_terminal"]] = round(engine_terminal, 2)
+    sheet_params(wb, c)
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(path)
+    cells_path = Path(cells_path) if cells_path else path.with_suffix(".cells.json")
+    cells_path.write_text(json.dumps(c.map, indent=1, sort_keys=True))
+    return path
+
+
+_BAKERY = {
+    "horizon_weeks": 13, "starting_cash": 20000, "cash_floor": 5000, "revenue": 15000, "affordability_share": 0.15,
+    "deposit_rate": 0.04,
+    "operating_cash_flow": [1000, -6000, -12000, -15000, -12000, -6000, -2000, 2000, 4000, 5000, 5000, 5000, 5000],
+    "recurring_invoices": {"amount": 6000, "weeks": [1, 13], "discount": 0.02, "discount_lag": 1, "net_lag": 4},
+    "line_of_credit": {"limit": 40000, "annual_rate": 0.11, "balance": 0},
+    "offers": [{"name": "MCA", "type": "mca", "weeks": [1, 13], "min": 10000, "max": 50000, "factor_rate": 1.35,
+                "weekly_debit_per_dollar": 0.045, "payoff_discount": 0.10, "prepayable": True},
+               {"name": "SBA 7(a)", "type": "sba_7a", "weeks": [7, 13], "min": 25000, "max": 150000, "prime": 0.07,
+                "months": 120}],
+}

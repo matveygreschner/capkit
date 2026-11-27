@@ -1,0 +1,24 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -r requirements-dev.txt
+      - name: Unit tests (Appendix J examples, products, optimizer oracle, workbook portability, skills)
+        run: python -m pytest -q
+      - name: Rebuild workbook and verify it against the engine (fuzzed)
+        run: |
+          PYTHONPATH=src python -m capkit workbook '{"path": "workbook/CapKit.xlsx"}'
+          python scripts/verify_workbook.py workbook/CapKit.xlsx --fuzz 10
+      - name: Skills are valid and in sync with src/
+        run: python scripts/build_skills.py --check
+      - name: Committed workbook is up to date
+        run: git diff --exit-code --stat workbook/CapKit.cells.json

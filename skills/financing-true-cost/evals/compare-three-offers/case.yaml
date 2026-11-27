@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: compare-three-offers
+expected_outcome: |
+  Compares an MCA, an SBA 7(a) loan and a 2/10 net 30 discount on one basis and ranks them.
