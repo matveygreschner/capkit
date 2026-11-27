@@ -9,8 +9,8 @@ import pytest
 
 pytest.importorskip("scipy")
 
-from capkit.optimize.model import NEVER, build_model
-from capkit.optimize.report import extract_plan, optimize, run
+from capkit.optimize.model import build_model
+from capkit.optimize.report import optimize, run
 from capkit.optimize.solve import solve
 from capkit.verify.reprice import evaluate
 

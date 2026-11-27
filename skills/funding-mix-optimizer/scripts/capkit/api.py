@@ -15,7 +15,7 @@ import json
 import math
 import sys
 from datetime import date
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Sequence
 
 from . import apr as A
 from . import compare as C
@@ -54,8 +54,8 @@ def apr(flows: list, unit: Optional[str] = None, method: str = "both"):
     ``unit`` = day|week|biweek|4week|semimonth|month|bimonth|quarter|semiannual|year (default: the most
     common payment interval). ``method`` = actuarial|us_rule|both."""
     if unit is not None and unit not in A.UNITS:
-        raise ValueError(f"unit must be one of {sorted(A.UNITS)}")
-    out = {}
+        raise ValueError(f"unit must be one of {sorted(A.UNITS)} or a multiple such as '6week' / '4month'")
+    out: Dict[str, Any] = {}
     if method in ("actuarial", "both"):
         out["apr_actuarial"] = A.apr_actuarial(flows, unit)
     if method in ("us_rule", "both"):
@@ -139,7 +139,7 @@ def check_disclosure(disclosed_apr: float, funding_provided: float, total_owed: 
     return out
 
 
-def optimize_mix(scenario: dict, carries: list = (0, 52), sensitivity: bool = True, time_limit: float = 60.0):
+def optimize_mix(scenario: dict, carries: Sequence[int] = (0, 52), sensitivity: bool = True, time_limit: float = 60.0):
     """Cheapest funding mix for a weekly cash forecast (needs scipy >= 1.9). See examples/bakery.json for
     the scenario format. Reports the plan at post-horizon carries H=0 and H=52, the saving versus the
     scenario's baseline, floor sensitivity, and an independent re-pricing check of every plan."""
@@ -200,7 +200,7 @@ COMMANDS: Dict[str, Callable] = {f.__name__: f for f in (
     true_cost, compare_offers, apr, early_pay_cost, disclosure_estimate, check_disclosure, sba_fee, params,
     prime_rate, workbook)}
 try:        # the experimental optimizer is registered only where its package is present (never in the
-    from . import optimize as _opt   # noqa: F401   released skills, which do not ship it)
+    from . import optimize as _opt  # noqa: F401   released skills, which do not ship it)
     COMMANDS.update({"optimize_mix": optimize_mix, "evaluate_mix": evaluate_mix})
 except ImportError:    # pragma: no cover
     pass

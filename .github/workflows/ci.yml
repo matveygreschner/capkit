@@ -13,8 +13,14 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -r requirements-dev.txt
-      - name: Unit tests (Appendix J examples, products, optimizer oracle, workbook portability, skills)
-        run: python -m pytest -q
+      - name: Lint (ruff)
+        run: ruff check src tests scripts
+      - name: Type check (mypy)
+        run: mypy src/capkit
+      - name: Unit tests with coverage
+        run: |
+          python -m coverage run --source=src/capkit -m pytest -q
+          python -m coverage report --fail-under=85
       - name: Rebuild workbook and verify it against the engine (fuzzed)
         run: |
           PYTHONPATH=src python -m capkit workbook '{"path": "workbook/CapKit.xlsx"}'

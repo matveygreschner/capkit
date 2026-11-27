@@ -124,9 +124,9 @@ def test_evaluator_applies_mca_prepay_penalty_like_the_model():
 
 
 # ---------------------------------------------------------------- second Codex audit: input validation
-from capkit.products import early_pay_cost, revenue_based, sba_7a  # noqa: E402
-from capkit.compare import after_tax_cost  # noqa: E402
 from capkit import api  # noqa: E402
+from capkit.compare import after_tax_cost  # noqa: E402
+from capkit.products import early_pay_cost, revenue_based  # noqa: E402
 
 
 @pytest.mark.parametrize("call", [

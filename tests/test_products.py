@@ -7,11 +7,22 @@ from pathlib import Path
 
 import pytest
 
-from capkit import api, params as P
+from capkit import api
 from capkit import disclosures as D
+from capkit import params as P
 from capkit.calendar import frb_holidays
-from capkit.products import (analyze, early_pay_cost, factoring, loc_draw, mca_fixed, sba_7a, term_loan,
-                             trade_credit, equipment_lease, mca_split)
+from capkit.products import (
+    analyze,
+    early_pay_cost,
+    equipment_lease,
+    factoring,
+    loc_draw,
+    mca_fixed,
+    mca_split,
+    sba_7a,
+    term_loan,
+    trade_credit,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 

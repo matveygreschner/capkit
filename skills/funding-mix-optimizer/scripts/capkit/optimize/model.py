@@ -26,7 +26,7 @@ the cash floor needs or what pays for itself.
 from __future__ import annotations
 
 import math
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 from .. import params as P
 
@@ -62,7 +62,7 @@ def amortizing_profile(annual_rate: float, months: int, T: int):
         if wk <= T:
             kk[wk] = kk.get(wk, 0.0) + pf
     rho = {}
-    for tau in range(0, T + 1):
+    for tau in range(T + 1):
         bal, last = 1.0, 0.0
         for cd, wk in due:
             if wk <= tau:
@@ -217,14 +217,14 @@ def build_model(scenario: dict, H: float = 0.0, force: Dict[str, float] | None =
     force = force or {}
 
     m = Model()
-    info = {"T": T, "offers": {}, "invoices": inv, "factoring": fac, "H": H, "force": force}
+    info: Dict[str, Any] = {"T": T, "offers": {}, "invoices": inv, "factoring": fac, "H": H, "force": force}
 
     # --- offers
     X: Dict[str, List[tuple]] = {}
     for o in offers:
         kk, rho, r_week = profiles(o, T)
         a, b = o.get("weeks", [1, T])
-        S = [s for s in range(max(1, a), min(T, b) + 1)]
+        S = list(range(max(1, a), min(T, b) + 1))
         U = (lambda s: list(range(s + 1, T + 1)) + [NEVER]) if o.get("prepayable", True) else (lambda s: [NEVER])
         L, Umax = float(o.get("min", 0.0)), float(o["max"])
         group_name = o.get("group", o["name"])
@@ -254,7 +254,7 @@ def build_model(scenario: dict, H: float = 0.0, force: Dict[str, float] | None =
     for g, members in groups.items():
         if len(members) > 1:
             m.row(("group", g), [(("z", j, s, u), 1.0) for j in members for s, u in X[j]], -math.inf, 1.0)
-    for g, amt in force.items():          # a forced offer must be taken
+    for g in force:                       # a forced offer must be taken
         members = groups.get(g, [g])
         m.row(("force", g), [(("z", j, s, u), 1.0) for j in members for s, u in X.get(j, [])], 1.0, 1.0)
 
@@ -288,13 +288,13 @@ def build_model(scenario: dict, H: float = 0.0, force: Dict[str, float] | None =
     aF = fac["advance_rate"] if fac else 0.0
 
     for t in range(1, T + 1):
-        cs = [(("B", t), 1.0)]
+        cs: List[Tuple[Any, float]] = [(("B", t), 1.0)]
         k0 = c[t]
         if t > 1:
             cs.append((("B", t - 1), -(1 + idep)))
         else:
             k0 += (1 + idep) * B0
-        aff = []
+        aff: List[Tuple[Any, float]] = []
         for name, (o) in ((n_, info["offers"][n_]) for n_ in X):
             for s, u in X[name]:
                 coef = 0.0
@@ -345,14 +345,14 @@ def build_model(scenario: dict, H: float = 0.0, force: Dict[str, float] | None =
             out_adv = [(("y", n, q), aF * recv[n]["face"]) for n, q in Y if q <= t < recv[n]["collect_week"]]
             if out_adv:
                 m.row(("fac_limit", t), out_adv, -math.inf, fac["limit"])
-    for n, r in enumerate(recv):
+    for n in range(len(recv)):
         ys = [(("y", n2, q), 1.0) for n2, q in Y if n2 == n]
         if ys:
             m.row(("sell_once", n), ys, -math.inf, 1.0)
 
     dscr = sc.get("dscr")
     if dscr:
-        ds = []
+        ds: List[Tuple[Any, float]] = []
         for name in X:
             o = info["offers"][name]
             for s, u in X[name]:

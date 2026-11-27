@@ -13,7 +13,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from datetime import date, timedelta
-from typing import Dict, List, Optional, Sequence
+from typing import Callable, Dict, List, Optional, Sequence, cast
 
 from . import apr as A
 from . import params as P
@@ -389,8 +389,8 @@ def analyze(s: Schedule) -> dict:
     except (ValueError, OverflowError):
         xirr = None
         warnings.append("XIRR is too large to compute (a very short, very expensive schedule).")
-    first = min(f.when for f in s.flows)
-    last = max(f.when for f in s.flows)
+    when = [cast(date, f.when) for f in s.flows]
+    first, last = min(when), max(when)
     term_days = (last - first).days
     if unit == "term":
         term_years = term_days / 365
@@ -419,7 +419,7 @@ def analyze(s: Schedule) -> dict:
     return out
 
 
-BUILDERS = {
+BUILDERS: Dict[str, Callable[..., Schedule]] = {
     "mca_fixed": mca_fixed, "mca_split": mca_split, "revenue_based": revenue_based, "term_loan": term_loan,
     "sba_7a": sba_7a, "line_of_credit": loc_draw, "factoring": factoring, "trade_credit": trade_credit,
     "equipment_lease": equipment_lease,

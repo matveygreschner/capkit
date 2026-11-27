@@ -23,7 +23,7 @@ import math
 from collections import Counter
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Iterable, List, Sequence, Tuple, Union
+from typing import List, Sequence, Tuple, Union, cast
 
 from .calendar import add_months, parse
 from .params import param
@@ -224,11 +224,13 @@ def period_position(base: date, d: date, unit: str, anchor: int | None = None) -
 
 def _positions(flows: List[Flow], unit: str):
     if all(isinstance(f.when, (int, float)) for f in flows):
-        return [(int(math.floor(f.when + 1e-12)), f.when - math.floor(f.when + 1e-12), f.amount) for f in flows]
-    base = min(f.when for f in flows)    # zero point: the earliest flow (Appendix J (c)(7)(ii))
-    pays = [f.when for f in flows if f.amount < 0]
+        nums = [(cast(float, f.when), f.amount) for f in flows]
+        return [(math.floor(w + 1e-12), w - math.floor(w + 1e-12), a) for w, a in nums]
+    dated = [(cast(date, f.when), f.amount) for f in flows]
+    base = min(d for d, _ in dated)    # zero point: the earliest flow (Appendix J (c)(7)(ii))
+    pays = [d for d, a in dated if a < 0]
     anchor = series_day(pays) if pays else None
-    return [period_position(base, f.when, unit, anchor) + (f.amount,) for f in flows]
+    return [period_position(base, d, unit, anchor) + (a,) for d, a in dated]
 
 
 def _pv(pos, i):
@@ -279,10 +281,10 @@ def _brackets(fn, lo: float, hi: float, geometric: bool):
         elif v0 * v1 < 0:
             out.append((x0, x1))
     for k in range(1, len(pts) - 1):
-        (xa, va), (xb, vb), (xc, vc) = pts[k - 1], pts[k], pts[k + 1]
+        (xa, va), (_xb, vb), (xc, vc) = pts[k - 1], pts[k], pts[k + 1]
         for sign in (1, -1):                      # a minimum of sign*f that might cross zero
             if sign * vb <= sign * va and sign * vb <= sign * vc and sign * vb > 0:
-                xm, fm = _golden_min(lambda x: sign * fn(x), xa, xc)
+                xm, fm = _golden_min(lambda x, s=sign: s * fn(x), xa, xc)
                 if fm < 0:
                     out += [(xa, xm), (xm, xc)]
     return sorted(set(out))
@@ -315,7 +317,7 @@ def roots(fn, lo: float = 0.0, hi: float = 1e4):
                 br = [(0.0, 0.0)] + br
         except Exception:
             pass
-    rs = []
+    rs: List[float] = []
     for a, b in br:
         r = _bisect(fn, a, b)
         if not rs or abs(r - rs[-1]) > 1e-4 * max(1e-3, abs(r)):     # a double root counts once
@@ -361,7 +363,7 @@ def _single_pair(fl: List[Flow]):
     if len(fl) == 2 and all(isinstance(f.when, date) for f in fl):
         adv = [f for f in fl if f.amount > 0]
         pay = [f for f in fl if f.amount < 0]
-        if len(adv) == 1 and len(pay) == 1 and adv[0].when < pay[0].when:
+        if len(adv) == 1 and len(pay) == 1 and cast(date, adv[0].when) < cast(date, pay[0].when):
             return adv[0], pay[0]
     return None
 
@@ -422,7 +424,8 @@ def apr_us_rule(flows, unit: str | None = None) -> float:
 def _default_unit(fl: List[Flow]) -> str:
     if all(isinstance(f.when, (int, float)) for f in fl):
         return "month"
-    return infer_unit([f.when for f in fl if f.amount < 0], [f.when for f in fl if f.amount > 0])
+    return infer_unit([cast(date, f.when) for f in fl if f.amount < 0],
+                      [cast(date, f.when) for f in fl if f.amount > 0])
 
 
 def ear(apr: float, unit: str) -> float:
@@ -434,8 +437,9 @@ def ear(apr: float, unit: str) -> float:
 def xirr(flows) -> float:
     """Annual IRR on actual days / 365 (Excel XIRR convention). Flows must be dated."""
     fl = _flows(flows)
-    base = min(f.when for f in fl)
-    pos = [((f.when - base).days / 365.0, f.amount) for f in fl]
+    dated = [(cast(date, f.when), f.amount) for f in fl]
+    base = min(d for d, _ in dated)
+    pos = [((d - base).days / 365.0, a) for d, a in dated]
     fn = lambda r: sum(a * math.exp(-y * math.log1p(r)) for y, a in pos)
     return _rate(fn, -0.9, hi=1e80)
 
@@ -458,10 +462,13 @@ def irregular_features(flows) -> List[str]:
     if len(adv) > 1:
         out.append("more than one advance")
     if len(pay) >= 3:
+        kinds: set
         if all(isinstance(f.when, date) for f in pay):
-            kinds = {_exact_interval(a.when, b.when) for a, b in zip(pay, pay[1:])}
+            ds = [cast(date, f.when) for f in pay]
+            kinds = {_exact_interval(a, b) for a, b in zip(ds, ds[1:])}
         else:
-            kinds = {round(b.when - a.when, 9) for a, b in zip(pay, pay[1:])}
+            ts = [cast(float, f.when) for f in pay]
+            kinds = {round(b - a, 9) for a, b in zip(ts, ts[1:])}
         if len(kinds) > 1:
             out.append("irregular payment periods")
     middle = [round(-f.amount, 2) for f in pay[1:-1]]

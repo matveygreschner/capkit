@@ -5,7 +5,6 @@ without it. Install with ``pip install "capkit[optimize]"`` (scipy >= 1.9 bundle
 """
 from __future__ import annotations
 
-import math
 import time
 
 

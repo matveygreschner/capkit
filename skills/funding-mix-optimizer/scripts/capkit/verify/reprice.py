@@ -137,7 +137,7 @@ def evaluate(scenario: dict, plan: dict, H: float = 0.0, tol: float = 1e-6) -> d
         elif not (0 <= n < len(inv)) or inv[n]["discount_week"] > T or inv[n].get("discount", 0) <= 0:
             problems.append(f"invoice {n}: no early-payment discount is available inside the horizon")
     ysales = [(int(y["receivable"]), int(y["week"]), float(y["share"])) for y in plan.get("factoring", [])]
-    sold = {}
+    sold: Dict[int, float] = {}
     for n, q, sh in ysales:
         if not (-tol <= sh <= 1 + tol):
             problems.append(f"receivable {n}: share sold {sh} must be between 0 and 1")

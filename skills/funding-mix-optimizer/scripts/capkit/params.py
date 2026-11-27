@@ -11,10 +11,11 @@ ship silently.
 from __future__ import annotations
 
 from datetime import date
+from typing import Any, Dict
 
 MAX_AGE_DAYS = 365
 
-PARAMS = {
+PARAMS: Dict[str, Dict[str, Any]] = {
     # ---------------- Regulation Z, Appendix J ----------------
     "regz_tolerance_regular": {
         "value": 0.125, "unit": "percentage points",
