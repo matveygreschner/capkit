@@ -1,7 +1,13 @@
-# The funding-mix model
+# The funding-mix model (CapKit Mix, experimental)
+
+> **Experimental, not released.** The model pools all cash in one account, so it cannot enforce
+> use-of-proceeds rules. For example, SBA 7(a) proceeds generally cannot be used to refinance a
+> merchant cash advance (SOP 50 10 8 / 8.1). An earlier public example made exactly that mistake.
+> Known evaluator gaps from the code audit are open. Treat every plan as a starting point for a
+> conversation with the lender, not a recommendation.
 
 **Decision.** How much of each funding source to use, in which week, and whether to prepay it. The
-goal is to cover a forecast cash shortfall at the lowest cost.
+goal is to cover a forecast cash shortfall while maximizing the terminal net position defined below.
 
 ## Variables (weeks t = 1…T)
 
@@ -11,7 +17,7 @@ goal is to cover a forecast cash shortfall at the lowest cost.
   - Every debit, prepayment and terminal payoff is a fixed per-dollar coefficient times one *x*.
     This is the *disaggregated* formulation.
   - "Prepay before funding" cannot be expressed, because *u* > *s* by construction.
-  - On the bakery example, the LP relaxation bound is $694 from the integer optimum. A big-M
+  - On the reference instance in `tests/fixtures/bakery_reference.json`, the LP relaxation bound is $694 from the integer optimum. A big-M
     formulation's bound is $202,279 away.
 - **Line of credit:** draw *d_t*, repayment *p_t*, balance 0 ≤ *b_t* ≤ limit. Interest on *b_{t−1}* is
   paid weekly.
@@ -59,8 +65,9 @@ The model maximizes:
 
 - **Solver.** HiGHS, through `scipy.optimize.milp`, with a relative gap of 1e-9. If the time limit is
   hit, the result is labelled "not proven optimal".
-- **Independent re-pricing** (`capkit.verify.reprice`). It rebuilds every cash flow from the offer
-  terms without the matrix:
+- **Re-pricing check** (`capkit.verify.reprice`). It rebuilds every cash flow from the offer
+  terms without reading the matrix. It does share the offer-expansion and invoice code with the
+  model, so it is a cross-check, not a fully independent implementation:
   - the MCA debit by debit;
   - the amortizing loans from their level payment;
   - invoices and factoring from their own weeks.

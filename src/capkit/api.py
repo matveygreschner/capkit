@@ -177,15 +177,21 @@ def call(name: str, args: Dict[str, Any]):
     return COMMANDS[name](**args)
 
 
-def main(argv=None):
+def main(argv=None, allowed=None):
+    """CLI entry. ``allowed`` restricts the commands (each packaged skill passes its own list)."""
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] in ("-h", "--help"):
         print(__doc__)
         return 0
     cmd = argv[0]
+    names = [n for n in COMMANDS if allowed is None or n in allowed]
     try:
+        if cmd not in ("list", "describe") and cmd not in names:
+            raise KeyError(f"command {cmd!r} is not available in this skill (available: {', '.join(names)})")
+        if cmd == "describe" and argv[1] not in names:
+            raise KeyError(f"command {argv[1]!r} is not available in this skill")
         if cmd == "list":
-            out = {n: describe(n)["args"] for n in COMMANDS}
+            out = {n: describe(n)["args"] for n in names}
         elif cmd == "describe":
             out = describe(argv[1])
         else:

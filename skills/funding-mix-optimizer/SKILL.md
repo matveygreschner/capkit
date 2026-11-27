@@ -1,14 +1,18 @@
 ---
 name: funding-mix-optimizer
-description: Finds the cheapest combination of small-business funding (merchant cash advance, line of credit, SBA 7(a) or term loan, supplier early-payment discounts, invoice factoring) that keeps cash above a floor every week of a 13-to-52-week forecast. It decides how much of each source to take, in which week, and whether to refinance or prepay, by solving a mixed-integer program (HiGHS) with weekly debit-affordability limits. Every plan is re-priced independently, and savings are reported against simply taking the offer on the table. Use this whenever a business owner, bookkeeper or CPA asks which financing to take, how to cover a cash shortfall or a slow season, whether to take an MCA or wait for an SBA loan, whether to refinance an advance, whether to use the line of credit to take 2/10 net 30, or wants a 13-week cash plan with funding, even if they don't say "optimize".
+description: Finds the cheapest combination of small-business funding (merchant cash advance, line of credit, SBA 7(a) or term loan, supplier early-payment discounts, invoice factoring) that keeps cash above a floor every week of a 13-to-52-week forecast. It decides how much of each source to take, in which week, and whether to refinance or prepay, by solving a mixed-integer program (HiGHS) with weekly debit-affordability limits. Every plan is re-priced as a cross-check, and savings are reported against simply taking the offer on the table. Use this whenever a business owner, bookkeeper or CPA asks which financing to take, how to cover a cash shortfall or a slow season, whether to take an MCA or wait for an SBA loan, whether to refinance an advance, whether to use the line of credit to take 2/10 net 30, or wants a 13-week cash plan with funding, even if they don't say "optimize".
 ---
 
-# Funding-mix optimizer
+# Funding-mix optimizer (CapKit Mix, experimental)
+
+> **Experimental, not released.** The model cannot enforce use-of-proceeds rules: for example, SBA
+> 7(a) proceeds generally cannot refinance a merchant cash advance (SOP 50 10 8 / 8.1). Never present
+> a plan that pays one lender off with another's money without saying that the lender must approve
+> that use. Present every plan as a starting point, not a recommendation.
 
 Decides **which money to take, how much, and when**. The bundled **CapKit** engine builds a weekly
-mixed-integer model from a cash forecast and the offers. HiGHS solves it, and an independent
-re-pricer then checks every plan before it is shown. Never pick a mix by intuition when the tool can
-solve it.
+mixed-integer model from a cash forecast and the offers. HiGHS solves it, and a re-pricer then
+cross-checks every plan before it is shown.
 
 ## Step 0: dependency check (do this first)
 ```bash

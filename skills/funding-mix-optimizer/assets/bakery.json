@@ -1,19 +1,74 @@
 {
-  "name": "Bakery: 13-week shortfall with an MCA offer, a line of credit, 2/10 net 30 flour invoices and an SBA 7(a) loan",
+  "name": "Bakery: 13-week shortfall with an MCA offer, a line of credit, 2/10 net 30 flour invoices and an SBA 7(a) working-capital loan. The MCA cannot be refinanced with SBA proceeds (SBA SOP 50 10 8/8.1), so it is not prepayable here.",
   "horizon_weeks": 13,
   "starting_cash": 20000,
   "cash_floor": 5000,
   "revenue": 15000,
   "affordability_share": 0.15,
   "deposit_rate": 0.04,
-  "operating_cash_flow": [1000, -6000, -12000, -15000, -12000, -6000, -2000, 2000, 4000, 5000, 5000, 5000, 5000],
-  "recurring_invoices": {"amount": 6000, "weeks": [1, 13], "discount": 0.02, "discount_lag": 1, "net_lag": 4},
-  "line_of_credit": {"limit": 40000, "annual_rate": 0.11, "balance": 0},
-  "offers": [
-    {"name": "MCA", "type": "mca", "weeks": [1, 13], "min": 10000, "max": 50000, "factor_rate": 1.35,
-     "weekly_debit_per_dollar": 0.045, "payoff_discount": 0.10, "prepayable": true},
-    {"name": "SBA 7(a)", "type": "sba_7a", "weeks": [7, 13], "min": 25000, "max": 150000, "prime": 0.07,
-     "months": 120}
+  "operating_cash_flow": [
+    1000,
+    -6000,
+    -12000,
+    -15000,
+    -12000,
+    -6000,
+    -2000,
+    2000,
+    4000,
+    5000,
+    5000,
+    5000,
+    5000
   ],
-  "baseline": {"force": {"MCA": 50000}, "label": "take the full $50,000 MCA you were offered"}
+  "recurring_invoices": {
+    "amount": 6000,
+    "weeks": [
+      1,
+      13
+    ],
+    "discount": 0.02,
+    "discount_lag": 1,
+    "net_lag": 4
+  },
+  "line_of_credit": {
+    "limit": 40000,
+    "annual_rate": 0.11,
+    "balance": 0
+  },
+  "offers": [
+    {
+      "name": "MCA",
+      "type": "mca",
+      "weeks": [
+        1,
+        13
+      ],
+      "min": 10000,
+      "max": 50000,
+      "factor_rate": 1.35,
+      "weekly_debit_per_dollar": 0.045,
+      "payoff_discount": 0.0,
+      "prepayable": false
+    },
+    {
+      "name": "SBA 7(a)",
+      "type": "sba_7a",
+      "weeks": [
+        7,
+        13
+      ],
+      "min": 25000,
+      "max": 150000,
+      "prime": 0.07,
+      "months": 120
+    }
+  ],
+  "baseline": {
+    "force": {
+      "MCA": 50000
+    },
+    "label": "take the full $50,000 MCA you were offered"
+  },
+  "note": "The model pools all cash in one account and cannot enforce use-of-proceeds rules. Check every SBA-funded plan with the lender: proceeds may be used for working capital, not to pay off merchant cash advances."
 }

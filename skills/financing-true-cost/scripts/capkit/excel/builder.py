@@ -5,10 +5,6 @@ IF, AND/OR, EDATE). No XLOOKUP, LET, LAMBDA, dynamic arrays, tables, defined nam
 suite fails the build if any appear. ``scripts/verify_workbook.py`` recalculates the file with an
 independent formula engine and compares it with the Python engine.
 
-The optimizer itself is not in the sheet (Excel Solver is not portable to Google Sheets). The
-``Mix_Evaluator`` sheet evaluates any plan you type with exactly the engine's rules and objective; it is
-pre-filled with CapKit's optimal bakery plan, and verification requires the sheet to reproduce the
-engine's objective for it.
 """
 from __future__ import annotations
 
@@ -82,10 +78,8 @@ def sheet_start(wb, c):
         "Loans - term loan and SBA 7(a): payment, APR with fees (RATE), SBA fee on the guaranteed portion and its statutory ceiling.",
         "EarlyPay_Factoring - cost of passing up 2/10 net 30, and invoice factoring cost.",
         "Disclosure - California / New York estimated APR, term and payment for sales-based financing (historical method).",
-        "Mix_Evaluator - type any funding plan for the 13-week bakery forecast: every rule is checked and the terminal net position computed.",
         "Params_Sources - every rate and limit with its legal source and verified-on date. Holidays - FRB holiday list.",
         "",
-        "The optimizer (which plan is best) runs in the Python engine / Claude skill; the sheet evaluates any plan exactly.",
         "Not legal, tax or financial advice. An MCA is usually a purchase of receivables, not a loan; its APR is a comparison measure.",
     ]
     for k, t in enumerate(lines, 3):
@@ -294,134 +288,6 @@ def sheet_disclosure(wb, c):
     ws.column_dimensions["B"].width = 16
 
 
-# ---------------------------------------------------------------- Mix_Evaluator (bakery-shaped)
-T = 13
-
-
-def sheet_mix(wb, c, scenario: dict, plan: dict):
-    ws = wb.create_sheet("Mix_Evaluator")
-    ws["A1"] = "Evaluate any funding plan: 13-week forecast, one MCA, one SBA 7(a) loan, a line of credit, 2/10 net 30 invoices"
-    ws["A1"].font = TITLE
-    ws["A2"] = ("Pre-filled with CapKit's optimal plan for examples/bakery.json. Change the yellow plan cells to test "
-                "your own mix: every rule is checked and the terminal net position uses the engine's objective.")
-    mca = next(o for o in scenario["offers"] if o["type"] == "mca")
-    sba = next(o for o in scenario["offers"] if o["type"] == "sba_7a")
-    inv = scenario["recurring_invoices"]
-    loc = scenario["line_of_credit"]
-    rows = [("Starting cash", scenario["starting_cash"], "B0", USD), ("Cash floor", scenario["cash_floor"], "floor", USD),
-            ("Weekly revenue", scenario["revenue"], "revenue", USD),
-            ("Affordability share of revenue", scenario["affordability_share"], "alpha", PCT),
-            ("Deposit rate on idle cash (annual)", scenario["deposit_rate"], "idep", PCT),
-            ("Post-horizon carry H (weeks: 0 or 52)", 0, "H", None),
-            ("LOC limit", loc["limit"], "loc_limit", USD), ("LOC rate (annual)", loc["annual_rate"], "loc_rate", PCT),
-            ("Invoice amount (received weekly)", inv["amount"], "inv_amt", USD),
-            ("Invoice discount", inv["discount"], "inv_disc", PCT),
-            ("MCA min", mca["min"], "mca_min", USD), ("MCA max", mca["max"], "mca_max", USD),
-            ("MCA factor rate", mca["factor_rate"], "mca_factor", None),
-            ("MCA weekly debit per advance dollar", mca["weekly_debit_per_dollar"], "mca_k", None),
-            ("MCA early-payoff discount", mca["payoff_discount"], "mca_pi", PCT),
-            ("SBA available from week", sba["weeks"][0], "sba_from", None),
-            ("SBA min", sba["min"], "sba_min", USD), ("SBA max", sba["max"], "sba_max", USD),
-            ("Prime rate", sba.get("prime", P.param("prime_rate")), "prime", PCT),
-            ("SBA term (months)", sba.get("months", 120), "sba_months", None)]
-    for k, (lab, v, name, fmt) in enumerate(rows, 4):
-        _label_input(c, ws, k, lab, v, name, fmt)
-    r0 = 4 + len(rows) + 1     # plan inputs
-    ws[f"A{r0}"] = "PLAN (inputs)"
-    ws[f"A{r0}"].font = HEAD
-    f = {x["offer"].split(" tier")[0]: x for x in plan["fundings"]}
-    m, s = f.get("MCA", {}), f.get("SBA 7(a)", {})
-    _label_input(c, ws, r0 + 1, "MCA amount (0 = none)", round(m.get("amount", 0), 6), "x_mca", USD)
-    _label_input(c, ws, r0 + 2, "MCA funding week", m.get("week", 1), "s_mca")
-    _label_input(c, ws, r0 + 3, "MCA prepay week (0 = not prepaid)", m.get("prepay_week") or 0, "u_mca")
-    _label_input(c, ws, r0 + 4, "SBA amount (0 = none)", round(s.get("amount", 0), 6), "x_sba", USD)
-    _label_input(c, ws, r0 + 5, "SBA funding week", s.get("week", sba["weeks"][0]), "s_sba")
-    r1 = r0 + 7                # derived offer terms
-    B = lambda name: c.map["Mix_Evaluator"][name].replace("B", "$B$")
-    _label_out(c, ws, r1, "SBA rate (Prime + SOP max spread for the size)",
-               f"={B('prime')}+INDEX(Loans!$F$4:$F$7,MATCH({B('x_sba')},Loans!$E$4:$E$7,1))",
-               "sba_rate", PCT)
-    _label_out(c, ws, r1 + 1, "SBA fee share of face (FY rate x guaranty share)",
-               f"=INDEX(Loans!$I$4:$I$6,MATCH({B('x_sba')},Loans!$H$4:$H$6,1))"
-               f"*IF({B('x_sba')}<=150000,0.85,0.75)", "sba_fee_share", PCT)
-    _label_out(c, ws, r1 + 2, "SBA monthly payment",
-               f"=IF({B('x_sba')}>0,PMT({B('sba_rate')}/12,{B('sba_months')},-{B('x_sba')}),0)", "sba_pmt", USD)
-    # due-week helper: payment m falls ceil(m*52/12) weeks after funding
-    ws[f"E{r1 - 1}"] = "SBA payment m"
-    ws[f"F{r1 - 1}"] = "weeks after funding"
-    for k in range(1, 5):
-        ws[f"E{r1 - 1 + k}"] = k
-        ws[f"F{r1 - 1 + k}"] = f"=CEILING(E{r1 - 1 + k}*52/12-0.000000001,1)"
-    due = f"$F${r1}:$F${r1 + 3}"
-    # weekly table
-    hr = r1 + 5
-    heads = ["Week", "Operating cash flow", "Funding in", "MCA debit", "MCA prepayment", "SBA payment",
-             "Early-pay share (invoice of this week)", "Invoices paid", "LOC balance (input)", "LOC interest",
-             "Cash", "Floor ok?", "Afford ok?", "MCA owed after week"]
-    for k, h in enumerate(heads):
-        cc = ws.cell(row=hr, column=1 + k, value=h)
-        cc.font = HEAD
-        cc.alignment = Alignment(wrap_text=True)
-    ep = plan.get("early_pay") or {}
-    lb = plan.get("loc_balance") or [0] * T
-    first = hr + 1
-    cash_prev = B("B0")
-    for t in range(1, T + 1):
-        r = hr + t
-        A_ = f"A{r}"
-        ws[A_] = t
-        c.put(ws, f"B{r}", scenario["operating_cash_flow"][t - 1], f"c{t}", INPUT, USD)
-        ws[f"C{r}"] = (f"=IF(AND({B('x_mca')}>0,{B('s_mca')}=A{r}),{B('x_mca')},0)"
-                       f"+IF(AND({B('x_sba')}>0,{B('s_sba')}=A{r}),{B('x_sba')}*(1-{B('sba_fee_share')}),0)")
-        ws[f"D{r}"] = (f"=IF(AND({B('x_mca')}>0,A{r}>{B('s_mca')},OR({B('u_mca')}=0,A{r}<={B('u_mca')})),"
-                       f"MIN({B('mca_k')}*{B('x_mca')},MAX(0,{B('mca_factor')}*{B('x_mca')}-{B('mca_k')}*{B('x_mca')}*(A{r}-{B('s_mca')}-1))),0)")
-        ws[f"E{r}"] = (f"=IF(AND({B('x_mca')}>0,{B('u_mca')}=A{r}),(1-{B('mca_pi')})*"
-                       f"MAX(0,{B('mca_factor')}*{B('x_mca')}-{B('mca_k')}*{B('x_mca')}*(A{r}-{B('s_mca')})),0)")
-        ws[f"F{r}"] = f"=IF(AND({B('x_sba')}>0,A{r}>{B('s_sba')}),{B('sba_pmt')}*COUNTIF({due},A{r}-{B('s_sba')}),0)"
-        c.put(ws, f"G{r}", ep.get(t - 1, 0.0) if t < T else 0, f"e{t}", INPUT)
-        # invoice received week w: early share e_w paid in week w+1 at (1-d); else paid in week w+4
-        early = f"IF(A{r}>1,INDEX($G${first}:$G${first + T - 1},A{r}-1),0)"
-        net = f"IF(A{r}>4,1-INDEX($G${first}:$G${first + T - 1},A{r}-4),0)"
-        ws[f"H{r}"] = f"=(1-{B('inv_disc')})*{B('inv_amt')}*{early}+{B('inv_amt')}*{net}"
-        c.put(ws, f"I{r}", round(lb[t - 1], 6), f"b{t}", INPUT, USD)
-        prev_b = "0" if t == 1 else f"I{r - 1}"
-        ws[f"J{r}"] = f"={B('loc_rate')}/52*{prev_b}"
-        ws[f"K{r}"] = (f"=(1+{B('idep')}/52)*{cash_prev}+B{r}+C{r}-D{r}-E{r}-F{r}-H{r}+(I{r}-{prev_b})-J{r}")
-        ws[f"L{r}"] = f'=IF(K{r}>={B("floor")}-0.005,"ok","BELOW FLOOR")'
-        ws[f"M{r}"] = f'=IF(D{r}+F{r}+J{r}<={B("alpha")}*{B("revenue")}+0.005,"ok","OVER")'
-        ws[f"N{r}"] = (f"=IF(AND({B('x_mca')}>0,A{r}>={B('s_mca')},{B('u_mca')}=0),MAX(0,{B('mca_factor')}*{B('x_mca')}"
-                       f"-{B('mca_k')}*{B('x_mca')}*(A{r}-{B('s_mca')})),0)")
-        for col_ in "BCDEFHIJK":
-            ws[f"{col_}{r}"].number_format = USD
-        c.map["Mix_Evaluator"][f"cash{t}"] = f"K{r}"
-        cash_prev = f"K{r}"
-    last = hr + T
-    rs = last + 2
-    k_due = f"COUNTIF({due},\"<=\"&({T}-{B('s_sba')}))"
-    _label_out(c, ws, rs, "SBA payments made by week 13", f"=IF({B('x_sba')}>0,{k_due},0)", "sba_k")
-    _label_out(c, ws, rs + 1, "SBA payoff value at week 13",
-               f"=IF({B('x_sba')}>0,({B('x_sba')}*(1+{B('sba_rate')}/12)^B{rs}-{B('sba_pmt')}*((1+{B('sba_rate')}/12)^B{rs}-1)"
-               f"/({B('sba_rate')}/12))*(1+{B('sba_rate')}/52*(({T}-{B('s_sba')})-B{rs}*52/12)),0)", "sba_payoff", USD)
-    _label_out(c, ws, rs + 2, "Invoices still owed after week 13",
-               f"={B('inv_amt')}*(4-SUMPRODUCT((A{first}:A{last}>=10)*(A{first}:A{last}<=12)*G{first}:G{last}))",
-               "inv_open", USD)
-    _label_out(c, ws, rs + 3, "Terminal net position",
-               f"=(1+{B('idep')}/52*{B('H')})*K{last}-(1+{B('loc_rate')}/52*{B('H')})*I{last}-N{last}"
-               f"-B{rs + 1}*(1+{B('sba_rate')}/52*{B('H')})-B{rs + 2}", "terminal", USD)
-    _label_out(c, ws, rs + 4, "Plan feasible?",
-               f'=IF(AND(COUNTIF(L{first}:L{last},"ok")={T},COUNTIF(M{first}:M{last},"ok")={T},'
-               f"OR({B('x_mca')}=0,AND({B('x_mca')}>={B('mca_min')},{B('x_mca')}<={B('mca_max')})),"
-               f"OR({B('x_sba')}=0,AND({B('x_sba')}>={B('sba_min')},{B('x_sba')}<={B('sba_max')},{B('s_sba')}>={B('sba_from')})),"
-               f"OR({B('u_mca')}=0,{B('u_mca')}>{B('s_mca')}),"
-               f'MIN(I{first}:I{last})>=0,MAX(I{first}:I{last})<={B("loc_limit")}+0.005),"FEASIBLE","NOT FEASIBLE")',
-               "feasible")
-    ws[f"A{rs + 5}"] = "Engine's optimal terminal net position for this scenario (H=0), for comparison:"
-    c.put(ws, f"B{rs + 5}", None, "engine_terminal", None, USD)
-    ws.column_dimensions["A"].width = 46
-    for k in range(2, 15):
-        ws.column_dimensions[col(k)].width = 14
-
-
 def _holiday_list():
     out = []
     for y in range(2025, 2031):
@@ -453,22 +319,8 @@ def sheet_params(wb, c):
         hs[f"A{r}"].number_format = "yyyy-mm-dd"
 
 
-def build_workbook(path="workbook/CapKit.xlsx", cells_path=None, scenario=None, plan=None, engine_terminal=None):
-    """Write the workbook (and a cells.json map of named cells). ``plan`` defaults to the engine's
-    optimal bakery plan when scipy is available, else a simple LOC-only plan."""
-    root = Path(__file__).resolve().parents[3]
-    if scenario is None:
-        here = root / "examples" / "bakery.json"
-        if not here.exists():   # vendored inside a skill: <skill>/assets/bakery.json
-            here = root / "assets" / "bakery.json"
-        scenario = json.loads(here.read_text()) if here.exists() else _BAKERY
-    if plan is None:
-        try:
-            from ..optimize.report import optimize
-            r = optimize(scenario)
-            plan, engine_terminal = r["plan"], r["objective"]
-        except Exception:
-            plan = {"fundings": [], "loc_balance": [0] * T, "early_pay": {}}
+def build_workbook(path="workbook/CapKit.xlsx", cells_path=None):
+    """Write the workbook and a cells.json map of named cells (used by the verifier)."""
     c = Cells()
     wb = Workbook()
     sheet_start(wb, c)
@@ -477,9 +329,6 @@ def build_workbook(path="workbook/CapKit.xlsx", cells_path=None, scenario=None, 
     sheet_loans(wb, c)
     sheet_earlypay(wb, c)
     sheet_disclosure(wb, c)
-    sheet_mix(wb, c, scenario, plan)
-    if engine_terminal is not None:
-        wb["Mix_Evaluator"][c.map["Mix_Evaluator"]["engine_terminal"]] = round(engine_terminal, 2)
     sheet_params(wb, c)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -487,16 +336,3 @@ def build_workbook(path="workbook/CapKit.xlsx", cells_path=None, scenario=None, 
     cells_path = Path(cells_path) if cells_path else path.with_suffix(".cells.json")
     cells_path.write_text(json.dumps(c.map, indent=1, sort_keys=True))
     return path
-
-
-_BAKERY = {
-    "horizon_weeks": 13, "starting_cash": 20000, "cash_floor": 5000, "revenue": 15000, "affordability_share": 0.15,
-    "deposit_rate": 0.04,
-    "operating_cash_flow": [1000, -6000, -12000, -15000, -12000, -6000, -2000, 2000, 4000, 5000, 5000, 5000, 5000],
-    "recurring_invoices": {"amount": 6000, "weeks": [1, 13], "discount": 0.02, "discount_lag": 1, "net_lag": 4},
-    "line_of_credit": {"limit": 40000, "annual_rate": 0.11, "balance": 0},
-    "offers": [{"name": "MCA", "type": "mca", "weeks": [1, 13], "min": 10000, "max": 50000, "factor_rate": 1.35,
-                "weekly_debit_per_dollar": 0.045, "payoff_discount": 0.10, "prepayable": True},
-               {"name": "SBA 7(a)", "type": "sba_7a", "weeks": [7, 13], "min": 25000, "max": 150000, "prime": 0.07,
-                "months": 120}],
-}
