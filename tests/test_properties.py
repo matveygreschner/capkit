@@ -152,3 +152,33 @@ def test_the_json_api_never_crashes_or_returns_non_finite_numbers(cmd, args):
             for v in o:
                 finite(v)
     finite(out)
+
+
+@SETTINGS
+@given(st.floats(100, 1e6), starts,
+       st.lists(st.tuples(st.integers(0, 200), st.floats(0.0, 3.0)), min_size=1, max_size=40),
+       st.sampled_from(["month", "week", "day", "semimonth", "quarter"]))
+def test_the_single_root_fast_path_matches_the_full_scan(adv, start, steps, unit):
+    """With every advance first there is one rate; bisection must find the same one a full scan does."""
+    d, flows = start, [(start, adv)]
+    for gap, share in steps:
+        d += timedelta(gap)
+        flows.append((d, -adv * share / len(steps)))
+    pos = A._positions(A._flows(flows), unit)
+    assert A._conventional([((t, f), a) for t, f, a in pos])
+    events = sorted((t + f, a) for t, f, a in pos)
+    for fn, ok in ((lambda i: A._pv(pos, i), True),
+                   (lambda i: A._us_rule_residual(events, i), A._us_rule_residual(events, 0.0) < 0)):
+        if not ok:
+            continue
+        try:
+            fast = A._rate(fn, -0.5, monotone=True)
+        except ValueError:
+            fast = None
+        try:
+            slow = A._rate(fn, -0.5)
+        except ValueError:
+            slow = None
+        assert (fast is None) == (slow is None)
+        if fast is not None:
+            assert fast == pytest.approx(slow, rel=1e-9, abs=1e-12)
