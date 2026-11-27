@@ -10,7 +10,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from capkit.api import main  # noqa: E402  (vendored engine)
+from capkit.api import main  # vendored engine (E402 allowed in pyproject)
 
 COMMANDS = ['optimize_mix', 'evaluate_mix', 'true_cost', 'early_pay_cost', 'workbook', 'params']
 
