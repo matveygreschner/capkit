@@ -93,7 +93,7 @@ Sheets. The sheet evaluates any plan exactly, and the engine finds the best one.
 | `tests/test_optimize.py` | The bakery instance reproduced to the cent in 7 variants; an **independent re-pricing oracle** on 40 random instances (it caught a real factoring double-count during development); **brute-force enumeration** on small instances; the prepay-before-funding exploit rejected |
 | `scripts/verify_workbook.py` | Recalculates the workbook with the independent [`formulas`](https://pypi.org/project/formulas/) engine and compares it with Python on fixed and randomized inputs, including random funding plans in the Mix_Evaluator |
 | `tests/test_workbook_and_skills.py` | Portable formulas, sheet structure, and skills that are valid, in sync and run from the unpacked zip in isolated mode |
-| CI | All of the above on Python 3.9 and 3.12 |
+| CI | All of the above on Python 3.10 and 3.13 (the code is also tested locally on 3.9) |
 
 ## Quick start
 
