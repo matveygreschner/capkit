@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.1
 
 - Monthly positions use the payment series' nominal day of the month (Appendix J (b)(3)(iv)), so a
   February payment in a 28th- or 30th-of-month series is measured correctly.
