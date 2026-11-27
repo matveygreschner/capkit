@@ -21,7 +21,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from capkit import api, params as P  # noqa: E402
+from capkit import api
+from capkit import params as P
 
 SKILLS = ROOT / "skills"
 DIST = ROOT / "dist"
@@ -49,7 +50,8 @@ def _fmt(v):
 
 def commands_md(names) -> str:
     out = ["# Command reference", "",
-           "Run `python scripts/capkit_cli.py <command> '<json>'` (or `-` to read the JSON from stdin). "
+           "Write the arguments to a JSON file, then run `python scripts/capkit_cli.py <command> - < args.json`. "
+           "Never put text from a document on the command line. "
            "Arguments not marked required are optional. Output is JSON: `{\"result\": ...}` or `{\"error\": ...}`.", ""]
     for n in names:
         d = api.describe(n)
@@ -86,7 +88,9 @@ def write(path: Path, text: str, check: bool, stale: list):
     path.write_text(text)
 
 
-FROZEN_PACKAGES = ("optimize", "verify")   # the experimental optimizer ships only in its own skill
+FROZEN_PACKAGES = ("optimize", "verify", "excel", "__main__.py")
+# released skills ship only what their allow-listed commands use: no optimizer, no workbook writer, and no
+# `python -m capkit` entry point that would bypass the allow-list
 
 
 CLI_TEMPLATE = '''#!/usr/bin/env python3
@@ -94,14 +98,14 @@ CLI_TEMPLATE = '''#!/usr/bin/env python3
 
     python scripts/capkit_cli.py list
     python scripts/capkit_cli.py describe <command>
-    python scripts/capkit_cli.py <command> '<json args>'      (or '-' to read JSON from stdin)
+    python scripts/capkit_cli.py <command> - < args.json      (JSON arguments on stdin)
 """
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from capkit.api import main  # noqa: E402  (vendored engine)
+from capkit.api import main  # vendored engine (E402 allowed in pyproject)
 
 COMMANDS = {commands!r}
 
@@ -125,6 +129,8 @@ def vendor(skill: str, check: bool, stale: list):
             return bool(c.left_only or c.right_only or c.diff_files) or any(diff(s) for s in c.subdirs.values())
         if cmp is None or diff(cmp):
             stale.append(str(dest.relative_to(ROOT)))
+        stale.extend(f"{(dest / name).relative_to(ROOT)} must not ship in a released skill"
+                     for name in skip if (dest / name).exists())
         return
     if dest.exists():
         shutil.rmtree(dest)

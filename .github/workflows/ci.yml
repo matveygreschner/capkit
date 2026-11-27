@@ -1,5 +1,7 @@
 name: CI
 on: [push, pull_request]
+permissions:
+  contents: read
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -13,8 +15,15 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -r requirements-dev.txt
-      - name: Unit tests (Appendix J examples, products, optimizer oracle, workbook portability, skills)
-        run: python -m pytest -q
+      - name: Lint (ruff)
+        run: ruff check src tests scripts
+      - name: Type check (mypy)
+        run: mypy src/capkit
+      - name: Unit tests with coverage
+        run: |
+          python -m coverage run --source=src/capkit -m pytest -q
+          python -m coverage report --fail-under=85
+          python -m coverage report --include=src/capkit/apr.py,src/capkit/disclosures.py --fail-under=94
       - name: Rebuild workbook and verify it against the engine (fuzzed)
         run: |
           PYTHONPATH=src python -m capkit workbook '{"path": "workbook/CapKit.xlsx"}'
@@ -23,3 +32,11 @@ jobs:
         run: python scripts/build_skills.py --check
       - name: Committed workbook is up to date
         run: git diff --exit-code --stat workbook/CapKit.cells.json
+  test-py39:
+    # the oldest Python the README and pyproject promise; no longer on the hosted runner image
+    runs-on: ubuntu-latest
+    container: python:3.9-slim
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest -q

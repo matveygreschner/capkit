@@ -10,12 +10,11 @@ from __future__ import annotations
 
 import json
 import math
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font, PatternFill
-from openpyxl.utils import get_column_letter as col
+from openpyxl.styles import Font, PatternFill
 from openpyxl.worksheet.datavalidation import DataValidation
 
 from .. import params as P
@@ -52,6 +51,13 @@ class Cells:
         return addr
 
 
+def _cent_payment(rate: str, n: str, pv: str) -> str:
+    """The level payment billed in cents, as products.term_loan bills it: rounded to the nearest cent,
+    or down when rounding up would overpay into a refund on the final payment."""
+    up = f"ROUND(PMT({rate},{n},-{pv}),2)"
+    return f"=IF(FV({rate},{n}-1,{up},-{pv})*(1+{rate})<-0.005,ROUNDDOWN(PMT({rate},{n},-{pv}),2),{up})"
+
+
 def _label_input(c, ws, row, label, value, name, fmt=None, note=None):
     ws[f"A{row}"] = label
     c.put(ws, f"B{row}", value, name, INPUT, fmt)
@@ -69,13 +75,14 @@ def _label_out(c, ws, row, label, formula, name, fmt=None, note=None):
 def sheet_start(wb, c):
     ws = wb.active
     ws.title = "Start"
-    ws["A1"] = "CapKit: what does this money really cost, and which money should I take?"
+    ws["A1"] = "CapKit: what does this financing really cost?"
     ws["A1"].font = TITLE
     lines = [
         "Yellow cells are inputs; green cells are results. Every formula is portable to Google Sheets.",
         "",
         "APR - fixed-debit financing (e.g. a weekly MCA) on its unit-period grid: Reg Z Appendix J APR = IRR x periods per year.",
-        "Daily_MCA - a business-day MCA on the calendar-day grid (Appendix J's whole-period case), with the Federal Reserve holiday calendar.",
+        "Daily_MCA - a business-day MCA on the calendar-day grid (Appendix J's whole-period case), "
+        "with the Federal Reserve holiday calendar.",
         "Loans - term loan and SBA 7(a): payment, APR with fees (RATE), SBA fee on the guaranteed portion and its statutory ceiling.",
         "EarlyPay_Factoring - cost of passing up 2/10 net 30, and invoice factoring cost.",
         "Disclosure - California / New York estimated APR, term and payment for sales-based financing (historical method).",
@@ -183,7 +190,7 @@ def sheet_loans(wb, c):
     _label_input(c, ws, 4, "Note rate (annual)", 0.15, "tl_rate", PCT)
     _label_input(c, ws, 5, "Term (months)", 24, "tl_months")
     _label_input(c, ws, 6, "Fee withheld", 1500, "tl_fee", USD)
-    _label_out(c, ws, 7, "Monthly payment (billed in cents)", "=ROUND(PMT(B4/12,B5,-B3),2)", "tl_payment", USD)
+    _label_out(c, ws, 7, "Monthly payment (billed in cents)", _cent_payment("B4/12", "B5", "B3"), "tl_payment", USD)
     _label_out(c, ws, 10, "Final payment (absorbs rounding)", "=ROUND(FV(B4/12,B5-1,B7,-B3)*(1+B4/12),2)",
                "tl_final", USD)
     _label_out(c, ws, 8, "APR (Appendix J, monthly unit)",
@@ -211,7 +218,7 @@ def sheet_loans(wb, c):
                "=B19*B12*INDEX($L$4:$L$6,MATCH(B12,$K$4:$K$6,1))+MAX(0,B19*B12-1000000)*0.0025",
                "sba_ceiling", USD)
     _label_out(c, ws, 23, "Fee within ceiling?", '=IF(B21<=B22+0.000001,"OK","ABOVE STATUTORY CEILING")', "sba_fee_ok")
-    _label_out(c, ws, 24, "Monthly payment (billed in cents)", "=ROUND(PMT(B18/12,B15,-B12),2)", "sba_payment", USD)
+    _label_out(c, ws, 24, "Monthly payment (billed in cents)", _cent_payment("B18/12", "B15", "B12"), "sba_payment", USD)
     _label_out(c, ws, 26, "Final payment (absorbs rounding)", "=ROUND(FV(B18/12,B15-1,B24,-B12)*(1+B18/12),2)",
                "sba_final", USD)
     _label_out(c, ws, 25, "APR with fee (monthly unit)",
@@ -305,7 +312,8 @@ def sheet_disclosure(wb, c):
                "apr", PCT)
     _label_out(c, ws, 24, "Disclosed APR within tolerance of actuarial? (CA 955 / NY 600.4)",
                '=IF(OR(ABS(B11-B23)<=0.00125,AND(B11>0,(B23-B11)/B11<=0.025)),"yes","no")', "check",
-               "1/8 point, or a signed percentage difference of 2.5% or less; U.S. Rule figure: see the engine")
+               "1/8 point (the regular-transaction tolerance), or a signed percentage difference of 2.5% or less. "
+               "CapKit's engine treats business-day debits as irregular (1/4 point); U.S. Rule figure: see the engine")
     _label_out(c, ws, 26, "Schedule fits in the grid?",
                f'=IF(MAX(K4:K{4 + DAILY_ROWS})>=B17,"OK","TOO LONG: term exceeds {DAILY_ROWS} days, figures are NOT valid")',
                "fits")

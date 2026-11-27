@@ -1,6 +1,6 @@
 # Command reference
 
-Run `python scripts/capkit_cli.py <command> '<json>'` (or `-` to read the JSON from stdin). Arguments not marked required are optional. Output is JSON: `{"result": ...}` or `{"error": ...}`.
+Write the arguments to a JSON file, then run `python scripts/capkit_cli.py <command> - < args.json`. Never put text from a document on the command line. Arguments not marked required are optional. Output is JSON: `{"result": ...}` or `{"error": ...}`.
 
 ## `true_cost`
 
@@ -9,9 +9,12 @@ mca_fixed(advance, factor_rate, payment, frequency=business_day|week|day|month, 
 mca_split(advance, factor_rate, holdback, sales[list per period], frequency, funding_date, fees),
 revenue_based(advance, cap_multiple, revenue_share, revenue[list], frequency=month),
 term_loan(amount, annual_rate, months, fee), sba_7a(amount, prime, spread=None->SOP max, months=120,
-fee_rate=None->FY table), line_of_credit(draw, annual_rate, weeks, draw_fee),
+fee_rate=None->FY table, approval_date, prior_90_day_amount and prior_90_day_fee together for loans
+approved within 90 days), line_of_credit(draw, annual_rate, weeks, draw_fee),
 factoring(face, advance_rate, fee_per_30_days, days_to_pay), trade_credit(invoice, discount,
-discount_days, net_days), equipment_lease(equipment_cost, payment, months, buyout, advance_payments).
+discount_days, net_days), equipment_lease(equipment_cost, payment, months, buyout, advance_payments,
+fees, end_of_term=return|own|unspecified; ask whether the equipment goes back: with no buyout and no
+end_of_term the tax character is unknown and no after-tax figure is given).
 
 Returns APR by both Appendix J methods, EAR, XIRR, finance charge, the naive simple-annualized quote,
 the dated schedule and, with ``marginal_rate``, an after-tax finance charge.
@@ -43,10 +46,11 @@ Args: `discount`=0.02, `discount_days`=10, `net_days`=30
 SBA 7(a) upfront guaranty fee on the guaranteed portion. The fee year follows ``approval_date``
 (FY2027 = approved Oct 1, 2026 - Sep 30, 2027). Short-term rate for ``months`` <= 12, size tiers
 otherwise, the 0% tier if ``zero_fee_eligible``; ``program`` = standard | express_veteran | ewcp | wcp;
-loans approved within 90 days combine (``prior_90_day_amount`` / ``prior_90_day_fee``). Checked
-against the statutory ceiling.
+loans approved within 90 days combine: give ``prior_90_day_amount`` and ``prior_90_day_fee`` together
+(the fee already charged; 0 if none). Checked against the statutory ceiling: ``ceiling`` (what remains
+for this loan), ``ceiling_combined_loans`` and ``ceiling_this_loan_alone``.
 
-Args: `amount`=**required**, `approval_date`=**required**, `rate`=None, `months`=120, `zero_fee_eligible`=False, `program`="standard", `prior_90_day_amount`=0.0, `prior_90_day_fee`=0.0
+Args: `amount`=**required**, `approval_date`=**required**, `rate`=None, `months`=120, `zero_fee_eligible`=False, `program`="standard", `prior_90_day_amount`=0.0, `prior_90_day_fee`=None
 
 ## `params`
 

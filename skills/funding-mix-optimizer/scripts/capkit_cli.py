@@ -3,14 +3,14 @@
 
     python scripts/capkit_cli.py list
     python scripts/capkit_cli.py describe <command>
-    python scripts/capkit_cli.py <command> '<json args>'      (or '-' to read JSON from stdin)
+    python scripts/capkit_cli.py <command> - < args.json      (JSON arguments on stdin)
 """
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from capkit.api import main  # noqa: E402  (vendored engine)
+from capkit.api import main  # vendored engine (E402 allowed in pyproject)
 
 COMMANDS = ['optimize_mix', 'evaluate_mix', 'true_cost', 'early_pay_cost', 'workbook', 'params']
 

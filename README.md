@@ -46,7 +46,7 @@ Skills install by uploading the zip in Claude (Settings → Capabilities → Ski
 - Regression tests cover the findings of two independent code audits.
 - `scripts/verify_workbook.py` recalculates the workbook with an independent formula engine and
   compares it with the Python engine on randomized inputs.
-- CI runs the suite and the workbook check on Python 3.10 and 3.13.
+- CI runs the suite and the workbook check on Python 3.9, 3.10 and 3.13.
 
 ```bash
 pip install -r requirements-dev.txt

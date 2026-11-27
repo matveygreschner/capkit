@@ -18,11 +18,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-import formulas  # noqa: E402
+import formulas
 
-from capkit import disclosures as D  # noqa: E402
-from capkit import params as P  # noqa: E402
-from capkit.products import analyze, early_pay_cost, factoring, mca_fixed, sba_7a, term_loan  # noqa: E402
+from capkit import disclosures as D
+from capkit import params as P
+from capkit.products import analyze, early_pay_cost, factoring, mca_fixed, sba_7a, term_loan
 
 EXCEL_EPOCH = date(1899, 12, 30)
 
@@ -55,6 +55,11 @@ class Book:
         return {o: sol[k].value[0, 0] for o, k in zip(outputs, outs)}
 
 
+# outputs measured in dollars; every other numeric output is a rate, a count or a date serial
+DOLLARS = {"finance_charge", "tl_payment", "tl_final", "sba_payment", "sba_final", "sba_fee", "sba_ceiling",
+           "fac_fee", "avg", "payment"}
+
+
 class Checker:
     def __init__(self, book):
         self.book, self.n, self.fail = book, 0, []
@@ -67,7 +72,9 @@ class Checker:
             if isinstance(exp, str):
                 ok = str(g) == exp
             else:
-                ok = isinstance(g, (int, float)) and abs(float(g) - float(exp)) <= (tol if abs(exp) >= 1 else 1e-6)
+                # rates (and counts/serial dates, which are whole numbers) to 1e-6; dollar amounts to a cent
+                lim = tol if k[1] in DOLLARS else 1e-6
+                ok = isinstance(g, (int, float)) and abs(float(g) - float(exp)) <= lim
             if not ok:
                 self.fail.append(f"{label}: {k[0]}.{k[1]} sheet={g!r} python={exp!r}")
 
@@ -109,19 +116,23 @@ def daily_cases(ch, rnd, n):
 
 def loan_cases(ch, rnd, n):
     S = "Loans"
-    cases = [(50000, 0.15, 24, 1500, 42548.02, 0.07)] + [
+    cases = [(50000, 0.15, 24, 1500, 42548.02, 0.07),
+             (500, 0.5833673019735014, 242, 0, 42548.02, 0.07)] + [     # cent rounding rounds down here
         (rnd.uniform(1e4, 5e5), rnd.uniform(0.05, 0.3), rnd.choice([12, 24, 36, 60]), rnd.uniform(0, 5000),
          rnd.choice([rnd.uniform(25e3, 50e3), rnd.uniform(5e4, 2.5e5), rnd.uniform(2.5e5, 3.5e5),
                      rnd.uniform(3.5e5, 3e6)]), rnd.uniform(0.04, 0.09)) for _ in range(n)]
     for k, (amt, rate, months, fee, sba_amt, prime) in enumerate(cases):
         sba_months = 120 if k == 0 else rnd.choice([12, 60, 120, 300])
-        tl = analyze(term_loan(amt, rate, months, fee))
+        tls = term_loan(amt, rate, months, fee)
+        tl = analyze(tls)
         sb = sba_7a(sba_amt, prime=prime, months=sba_months)
         sa = analyze(sb)
         ch.check(f"Loans {amt:.0f}/{sba_amt:.0f}",
                  {(S, "tl_amount"): amt, (S, "tl_rate"): rate, (S, "tl_months"): months, (S, "tl_fee"): fee,
                   (S, "sba_amount"): sba_amt, (S, "prime"): prime, (S, "sba_months"): sba_months},
-                 {(S, "tl_apr"): tl["apr_actuarial"], (S, "sba_fee"): sb.terms["upfront_fee"],
+                 {(S, "tl_apr"): tl["apr_actuarial"], (S, "tl_payment"): tls.terms["payment"],
+                  (S, "tl_final"): tls.terms["final_payment"], (S, "sba_payment"): sb.terms["payment"],
+                  (S, "sba_final"): sb.terms["final_payment"], (S, "sba_fee"): sb.terms["upfront_fee"],
                   (S, "sba_ceiling"): P.sba_fee_ceiling(sba_amt), (S, "sba_apr"): sa["apr_actuarial"],
                   (S, "sba_rate"): sb.terms["annual_rate"], (S, "sba_fee_ok"): "OK"})
 
@@ -156,12 +167,17 @@ def disclosure_cases(ch, rnd, n):
         est = D.estimate(fund, owed, split, avg, "business_day", d, fees, minp)
         if est["estimated_term_days"] > 1090:
             continue
+        # a disclosed APR near the estimate, so both "yes" and "no" verdicts are exercised; the sheet applies the
+        # regular (1/8 point) tolerance, so the engine's verdict is taken with irregular=False
+        disclosed = est["estimated_apr_actuarial"] * rnd.uniform(0.97, 1.01)
+        ok = D.check_disclosed_apr(disclosed, est, irregular=False)["methods"]["actuarial"]["consistent"]
         ins = {(S, "funding"): fund, (S, "owed"): owed, (S, "fees"): fees, (S, "split"): split, (S, "window"): win,
-               (S, "fund"): xl_date(d), (S, "minpay"): minp}
+               (S, "fund"): xl_date(d), (S, "minpay"): minp, (S, "disclosed"): disclosed}
         ins.update({(S, f"sales{k + 1}"): v for k, v in enumerate(sales)})
         ch.check(f"Disclosure {fund:.0f} w{win}", ins,
                  {(S, "avg"): avg, (S, "payment"): est["first_payment"], (S, "n"): est["number_of_payments"],
-                  (S, "term_days"): est["estimated_term_days"], (S, "apr"): est["estimated_apr_actuarial"]})
+                  (S, "term_days"): est["estimated_term_days"], (S, "apr"): est["estimated_apr_actuarial"],
+                  (S, "check"): "yes" if ok else "no"})
 
 
 def main():

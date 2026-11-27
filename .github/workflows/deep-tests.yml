@@ -1,0 +1,25 @@
+name: deep property tests
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60     # measured: 7.8 min for all three files at 2,000 examples (Python 3.9, laptop)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements-dev.txt
+      - name: Property tests, 2000 examples per property
+        env:
+          HYPOTHESIS_PROFILE: deep
+          PYTHONPATH: src
+        run: python -m pytest -q tests/test_properties.py tests/test_hardening.py tests/test_api_fuzz.py

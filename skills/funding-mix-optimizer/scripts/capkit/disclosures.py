@@ -25,8 +25,8 @@ twelve months after funding on the Federal Reserve calendar.
 from __future__ import annotations
 
 import math
-from datetime import timedelta
-from typing import List, Optional, Sequence
+from datetime import date, timedelta
+from typing import Sequence, cast
 
 from . import apr as A
 from . import params as P
@@ -50,7 +50,11 @@ def historical_average(monthly_sales: Sequence[float], window: int, state: str =
     if not 4 <= window <= 12 and len(sales) >= 4:
         raise ValueError("the historical window must be 4 to 12 months (10 CCR 930; 23 NYCRR 600.8)")
     window = min(window, len(sales))
-    drop = set(exclude)
+    if any(isinstance(k, bool) or not isinstance(k, (int, float)) or k != int(k) or not 0 <= k < len(sales)
+           for k in exclude):
+        raise ValueError(f"exclude_months are 0-based indexes into monthly_sales (0 to {len(sales) - 1}, "
+                         "oldest first); negative or out-of-range indexes are not accepted")
+    drop = {int(k) for k in exclude}
     if method == "highest":
         if state != "NY":
             raise ValueError("the highest-months option is New York's (23 NYCRR 600.8)")
@@ -76,39 +80,59 @@ def periods_per_year(frequency: str, funding_date, holidays="frb") -> int:
     return {"day": 365, "week": 52, "biweek": 26, "month": 12}[frequency]
 
 
+FREQUENCIES = ("business_day", "day", "week", "biweek", "month")
+
+
 def _months_since(fd, d) -> int:
     """Whole contract months elapsed from the funding date (month 1 = the first month after funding)."""
-    k = 0
-    while add_months(fd, k + 1) <= d:
-        k += 1
+    k = (d.year - fd.year) * 12 + d.month - fd.month      # O(1); add_months is non-decreasing in k
+    if add_months(fd, k) > d:
+        k -= 1
     return k + 1
 
 
 def estimate(funding_provided: float, total_owed: float, split_rate: float, avg_monthly_sales: float,
              frequency: str = "business_day", funding_date="2027-01-04", prepaid_fees: float = 0.0,
              minimum_payment: float = 0.0, holidays="frb", state: str = "CA", paid_on_behalf: float = 0.0,
-             split_schedule=None) -> dict:
+             split_schedule=None, funding_basis: str = "net") -> dict:
     """Estimated disclosure figures for a sales-based financing under the historical method.
 
     ``funding_provided`` = cash to the recipient; ``paid_on_behalf`` = amounts paid to others for the
     recipient (e.g. paying off a prior advance). Both are part of the amount financed, which is what
-    the coverage threshold and the APR use. ``split_schedule`` = [[from_month, rate], ...] for a split
+    the coverage threshold and the APR use. ``prepaid_fees`` are fees withheld from the funding. With
+    ``funding_basis="net"`` (default) ``funding_provided`` is already net of them, so they are reported
+    but not subtracted again; with ``"gross"`` it is the amount before they are withheld (excluding
+    ``paid_on_behalf``) and they are subtracted (12 CFR 1026.18(b)(3)). ``split_schedule`` = [[from_month, rate], ...] for a split
     that changes over time (month 1 = the first month after funding); otherwise ``split_rate`` applies
     throughout."""
     if state not in STATES:
         raise ValueError(f"state must be one of {STATES}")
+    if frequency not in FREQUENCIES:
+        raise ValueError(f"frequency must be one of {FREQUENCIES}")
     for name, v in (("funding_provided", funding_provided), ("total_owed", total_owed),
                     ("avg_monthly_sales", avg_monthly_sales)):
         if not (isinstance(v, (int, float)) and math.isfinite(v) and v > 0):
             raise ValueError(f"{name} must be a positive number")
     if not all(math.isfinite(v) and v >= 0 for v in (prepaid_fees, minimum_payment, paid_on_behalf)):
         raise ValueError("fees, minimum payment and amounts paid on behalf must be zero or positive")
-    steps = sorted((int(m), float(r)) for m, r in (split_schedule or [[1, split_rate]]))
+    raw = split_schedule or [[1, split_rate]]
+    if any(isinstance(m, bool) or not isinstance(m, (int, float)) or m != int(m) or m < 1 for m, _ in raw):
+        raise ValueError("split_schedule months must be whole numbers from 1 (month 1 = first month after funding)")
+    if len({int(m) for m, _ in raw}) != len(raw):
+        raise ValueError("split_schedule lists the same month twice")
+    steps = sorted((int(m), float(r)) for m, r in raw)
     if steps[0][0] != 1:
-        steps = [(1, float(split_rate))] + steps
+        steps = [(1, float(split_rate)), *steps]
     if any(not (0 < r <= 1) for _, r in steps):
         raise ValueError("split rates must be between 0 and 1")
-    amount_financed = funding_provided + paid_on_behalf
+    if funding_basis not in ("net", "gross"):
+        raise ValueError("funding_basis must be 'net' (cash after fees are withheld) or 'gross'")
+    if funding_basis == "gross" and prepaid_fees >= funding_provided:
+        raise ValueError("prepaid fees must be less than the gross funding")
+    # 12 CFR 1026.18(b)(3): prepaid finance charges are not part of the amount financed. A net figure
+    # already excludes them; a gross one has them subtracted here (as products.mca_fixed does with fees).
+    cash = funding_provided - prepaid_fees if funding_basis == "gross" else funding_provided
+    amount_financed = cash + paid_on_behalf
     if total_owed <= amount_financed:
         raise ValueError("total owed must exceed the amount financed")
     limit = P.param("ca_cfdl_max_amount" if state == "CA" else "ny_cfdl_max_amount")
@@ -130,7 +154,7 @@ def estimate(funding_provided: float, total_owed: float, split_rate: float, avg_
         pays.append(amt)
         owed -= amt
     unit = {"business_day": "day", "day": "day", "week": "week", "biweek": "biweek", "month": "month"}[frequency]
-    first, last = flows[0].when, flows[-1].when
+    first, last = cast(date, flows[0].when), cast(date, flows[-1].when)
     term_days = (last - first).days
     total_pay = sum(pays)
     apr_a = A.apr_actuarial(flows, unit)
@@ -140,10 +164,13 @@ def estimate(funding_provided: float, total_owed: float, split_rate: float, avg_
         "state": state,
         "covered": amount_financed <= limit,
         "coverage_limit": limit,
-        "coverage_basis": "amount financed (funding provided + amounts paid on the recipient's behalf); "
+        "coverage_basis": "amount financed (funding provided net of prepaid fees + amounts paid on the "
+                          "recipient's behalf); "
                           "check the exemptions too (Cal. Fin. Code 22801; 23 NYCRR 600.19)",
         "funding_provided": round(funding_provided, 2),
         "paid_on_behalf": round(paid_on_behalf, 2),
+        "prepaid_fees": round(prepaid_fees, 2),
+        "funding_basis": funding_basis,
         "amount_financed": round(amount_financed, 2),
         "estimated_apr_actuarial": apr_a,
         "estimated_apr_us_rule": apr_u,
@@ -164,13 +191,30 @@ def estimate(funding_provided: float, total_owed: float, split_rate: float, avg_
         "split_schedule": [[m, r] for m, r in steps],
         "unit_period": unit,
         "last_payment_date": last.isoformat(),
-        "modeled": ["split rate (or stepped split schedule)", "contractual minimum debit", "prepaid fees",
+        "modeled": ["split rate (or stepped split schedule)", "contractual minimum debit",
+                    "prepaid fees (" + ("subtracted from the gross funding" if funding_basis == "gross"
+                                       else "assumed already withheld from funding_provided") + ")",
                     "amounts paid on the recipient's behalf", "Federal Reserve business-day calendar"],
         "not_modeled": list(NOT_MODELED_ESTIMATE),
         "sources": ["10 CCR 930, 940, 942, 914, 955" if state == "CA" else "23 NYCRR 600.3, 600.4, 600.6-600.8"],
         "caveat": "Educational reproduction of the estimate math under the inputs given; not a compliance "
                   "certification. A result is only as complete as the contract features entered.",
     }
+    if funding_basis == "net" and 0 < prepaid_fees < funding_provided:
+        # The input is ambiguous: a contract's headline funding figure is often BEFORE the fee is withheld.
+        # Report the other reading next to this one instead of guessing (the gross reading is never lower).
+        try:
+            g = estimate(funding_provided, total_owed, split_rate, avg_monthly_sales, frequency, funding_date,
+                         prepaid_fees, minimum_payment, holidays, state, paid_on_behalf, split_schedule, "gross")
+        except ValueError as e:     # e.g. no APR solves the gross reading: report that, keep the net result
+            out["if_funding_provided_is_before_fees"] = {"error": str(e)}
+            return out
+        out["if_funding_provided_is_before_fees"] = {
+            "amount_financed": g["amount_financed"], "estimated_apr_actuarial": g["estimated_apr_actuarial"],
+            "estimated_apr_us_rule": g["estimated_apr_us_rule"], "covered": g["covered"]}
+        out["warning"] = (f"prepaid_fees were treated as already withheld from funding_provided (funding_basis "
+                          f"'net'). If {funding_provided:,.2f} is the amount BEFORE the fee, the estimated APR is "
+                          f"{g['estimated_apr_actuarial']:.2%}, not {apr_a:.2%}: pass funding_basis 'gross'.")
     return out
 
 

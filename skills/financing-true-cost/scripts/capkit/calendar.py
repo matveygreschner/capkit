@@ -6,8 +6,11 @@ that Friday, so an ACH debit still settles. Source: Federal Reserve Financial Se
 """
 from __future__ import annotations
 
+import re
 from datetime import date, timedelta
-from functools import lru_cache
+from functools import cache
+
+_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 def _nth_weekday(year: int, month: int, weekday: int, n: int) -> date:
@@ -21,7 +24,7 @@ def _last_weekday(year: int, month: int, weekday: int) -> date:
     return d - timedelta((d.weekday() - weekday) % 7)
 
 
-@lru_cache(maxsize=None)
+@cache
 def frb_holidays(year: int) -> frozenset:
     """Federal Reserve Bank holidays observed in ``year``."""
     fixed = [date(year, 1, 1), date(year, 6, 19), date(year, 7, 4), date(year, 11, 11), date(year, 12, 25)]
@@ -43,8 +46,8 @@ def frb_holidays(year: int) -> frozenset:
 
 
 def _holiday_set(holidays):
-    if holidays in ("frb", None, False) or isinstance(holidays, (set, frozenset)) and all(
-            isinstance(h, date) for h in holidays):
+    if holidays in ("frb", None, False) or (isinstance(holidays, (set, frozenset)) and all(
+            isinstance(h, date) for h in holidays)):
         return holidays
     return frozenset(parse(h) for h in holidays)      # accept ISO strings as well as dates
 
@@ -62,7 +65,8 @@ def is_business_day(d: date, holidays="frb") -> bool:
 def business_days_after(start: date, n: int, holidays="frb") -> list:
     """The next ``n`` business days strictly after ``start``."""
     holidays = _holiday_set(holidays)
-    out, d = [], start
+    out: list = []
+    d = start
     while len(out) < n:
         d += timedelta(1)
         if is_business_day(d, holidays):
@@ -79,4 +83,10 @@ def add_months(d: date, k: int) -> date:
 
 
 def parse(d) -> date:
-    return d if isinstance(d, date) else date.fromisoformat(str(d))
+    """A ``date``, or an ISO ``YYYY-MM-DD`` string. Only that one form is accepted, so the result does not
+    depend on the Python version (3.11+ ``fromisoformat`` also reads "20270104" and week dates; 3.9 does not)."""
+    if isinstance(d, date):
+        return d
+    if not (isinstance(d, str) and _ISO_DATE.fullmatch(d)):
+        raise ValueError(f"a date must be a YYYY-MM-DD string, got {d!r:.40}")
+    return date.fromisoformat(d)        # still rejects impossible dates such as 2027-02-30
