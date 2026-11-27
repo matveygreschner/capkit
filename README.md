@@ -2,7 +2,22 @@
 
 [![CI](https://github.com/matveygreschner/capkit/actions/workflows/ci.yml/badge.svg)](https://github.com/matveygreschner/capkit/actions/workflows/ci.yml)
 
-Open-source tools for checking the cost of small-business financing from the borrower's side.
+**What a business loan really costs.** Lenders quote cash advances and short-term loans in ways that are
+hard to compare: a "1.35 factor rate", a "6% fee", a daily payment. CapKit turns any offer into one
+number, the annual percentage rate (APR), using the same method federal law requires for consumer
+loans, so two offers can be compared side by side.
+
+For example, a $50,000 cash advance at a 1.35 factor rate looks like it costs 35%. Repaid at $450 per
+business day, it really costs about **107% a year**.
+
+CapKit also checks the cost disclosure that California and New York require lenders to give you, and
+tells you whether the APR on it holds up.
+
+**Use it:** download the [Excel workbook](workbook/CapKit.xlsx) and type in your offer, or add the free
+Claude skill and paste in a term sheet. CapKit is free, takes no money from lenders, and does not give
+legal or financial advice.
+
+## How it works
 
 CapKit is a Python engine (standard library only) with a formula-driven Excel/Google Sheets workbook
 and two Claude skills built on it. It computes Regulation Z Appendix J APRs on actual payment dates
